@@ -119,13 +119,18 @@ def build_ag_news_clients(
     min_per_client: int = 20,
     repeat: int = 20,
     use_external_csv: bool = True,
-) -> Tuple[List[Dataset], Dataset, int, int]:
+    max_vocab: int = 5000,
+) -> Tuple[List[Dataset], Dataset, int, int, dict]:
     """
     Build a text dataset and split into client datasets.
 
     If CSV files `data/ag_news_train.csv` and `data/ag_news_test.csv` exist,
     they are used as a larger corpus (label,text). Otherwise a small built-in
     corpus is used so the code still runs offline.
+
+    ``max_vocab`` caps the vocabulary to the N most frequent tokens so
+    the embedding layer stays small enough for meaningful sparse-vs-dense
+    communication comparisons.
     """
     project_root = Path(__file__).resolve().parents[2]
     data_dir = project_root / "data"
@@ -139,14 +144,16 @@ def build_ag_news_clients(
 
     if use_external_csv and train_csv.exists() and test_csv.exists():
         texts_train, labels_train, texts_test, labels_test = _load_csv_corpus(train_csv, test_csv)
-        # Simple vocab from training texts
-        vocab = {"<pad>": 0}
-        idx = 1
+
+        # Build frequency-capped vocab: keep only the most common tokens
+        from collections import Counter
+        token_counts: Counter = Counter()
         for text in texts_train:
-            for tok in text.lower().split():
-                if tok not in vocab:
-                    vocab[tok] = idx
-                    idx += 1
+            token_counts.update(text.lower().split())
+
+        vocab = {"<pad>": 0}
+        for tok, _ in token_counts.most_common(max_vocab - 1):
+            vocab[tok] = len(vocab)
 
         train_dataset = TextClassificationDataset(texts_train, labels_train, vocab, seq_len=seq_len)
         test_dataset = TextClassificationDataset(texts_test, labels_test, vocab, seq_len=seq_len)
@@ -167,6 +174,6 @@ def build_ag_news_clients(
     clients = [c for c in clients if len(c) >= min_per_client]
 
     num_classes = max(labels_train or [0]) + 1 if use_external_csv and train_csv.exists() else 4
-    return clients, test_dataset, len(getattr(train_dataset, "vocab", vocab)), num_classes
+    return clients, test_dataset, len(vocab), num_classes, vocab
 
 

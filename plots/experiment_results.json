@@ -1,0 +1,210 @@
+{
+  "privacy_utility": [
+    {
+      "noise_mult": 0.0,
+      "epsilon": Infinity,
+      "accuracy": 0.58
+    },
+    {
+      "noise_mult": 0.1,
+      "epsilon": 0.28888837079824986,
+      "accuracy": 0.25
+    },
+    {
+      "noise_mult": 0.3,
+      "epsilon": 0.09629612359941662,
+      "accuracy": 0.25
+    },
+    {
+      "noise_mult": 0.5,
+      "epsilon": 0.057777674159649975,
+      "accuracy": 0.2501315789473684
+    },
+    {
+      "noise_mult": 1.0,
+      "epsilon": 0.028888837079824987,
+      "accuracy": 0.2611842105263158
+    },
+    {
+      "noise_mult": 2.0,
+      "epsilon": 0.014444418539912494,
+      "accuracy": 0.25
+    }
+  ],
+  "comm_vs_k": [
+    {
+      "K": 1,
+      "accuracy": 0.5423684210526316,
+      "dense_MB": 58.6028,
+      "sparse_MB": 35.4412,
+      "saving_pct": 39.523026203526115
+    },
+    {
+      "K": 2,
+      "accuracy": 0.5496052631578947,
+      "dense_MB": 58.6028,
+      "sparse_MB": 38.75,
+      "saving_pct": 33.87687960302238
+    },
+    {
+      "K": 3,
+      "accuracy": 0.5765789473684211,
+      "dense_MB": 58.6028,
+      "sparse_MB": 42.0588,
+      "saving_pct": 28.230733002518647
+    },
+    {
+      "K": 4,
+      "accuracy": 0.5909210526315789,
+      "dense_MB": 58.6028,
+      "sparse_MB": 45.3676,
+      "saving_pct": 22.584586402014917
+    },
+    {
+      "K": 5,
+      "accuracy": 0.5728947368421052,
+      "dense_MB": 58.6028,
+      "sparse_MB": 48.6764,
+      "saving_pct": 16.938439801511194
+    },
+    {
+      "K": 6,
+      "accuracy": 0.5728947368421052,
+      "dense_MB": 58.6028,
+      "sparse_MB": 51.9852,
+      "saving_pct": 11.292293201007464
+    },
+    {
+      "K": 7,
+      "accuracy": 0.5622368421052631,
+      "dense_MB": 58.6028,
+      "sparse_MB": 55.294,
+      "saving_pct": 5.646146600503732
+    },
+    {
+      "K": 8,
+      "accuracy": 0.5598684210526316,
+      "dense_MB": 58.6028,
+      "sparse_MB": 58.6028,
+      "saving_pct": 0.0
+    }
+  ],
+  "verification_overhead": [
+    {
+      "K": 1,
+      "gen_ms": 2.910058000124991,
+      "ver_ms": 2.8838640000321902,
+      "total_ms": 5.793922000157181
+    },
+    {
+      "K": 2,
+      "gen_ms": 3.2069060002686456,
+      "ver_ms": 3.243339999753516,
+      "total_ms": 6.450246000022162
+    },
+    {
+      "K": 3,
+      "gen_ms": 3.0343460000585765,
+      "ver_ms": 3.076493999978993,
+      "total_ms": 6.1108400000375696
+    },
+    {
+      "K": 4,
+      "gen_ms": 2.940938000101596,
+      "ver_ms": 3.216532000224106,
+      "total_ms": 6.157470000325702
+    },
+    {
+      "K": 5,
+      "gen_ms": 2.989159999997355,
+      "ver_ms": 2.966842000023462,
+      "total_ms": 5.956002000020817
+    },
+    {
+      "K": 6,
+      "gen_ms": 3.2220260001486167,
+      "ver_ms": 2.985952000017278,
+      "total_ms": 6.207978000165895
+    },
+    {
+      "K": 7,
+      "gen_ms": 3.100696000037715,
+      "ver_ms": 2.838810000102967,
+      "total_ms": 5.939506000140682
+    },
+    {
+      "K": 8,
+      "gen_ms": 3.1912200001534075,
+      "ver_ms": 2.839072000060696,
+      "total_ms": 6.030292000214104
+    }
+  ],
+  "robustness": {
+    "FedAvg": [
+      {
+        "malicious_pct": 0.0,
+        "accuracy": 0.5785526315789473
+      },
+      {
+        "malicious_pct": 10.0,
+        "accuracy": 0.5785526315789473
+      },
+      {
+        "malicious_pct": 20.0,
+        "accuracy": 0.4856578947368421
+      },
+      {
+        "malicious_pct": 30.0,
+        "accuracy": 0.4856578947368421
+      },
+      {
+        "malicious_pct": 40.0,
+        "accuracy": 0.4181578947368421
+      }
+    ],
+    "Median": [
+      {
+        "malicious_pct": 0.0,
+        "accuracy": 0.5303947368421053
+      },
+      {
+        "malicious_pct": 10.0,
+        "accuracy": 0.5303947368421053
+      },
+      {
+        "malicious_pct": 20.0,
+        "accuracy": 0.5125
+      },
+      {
+        "malicious_pct": 30.0,
+        "accuracy": 0.5125
+      },
+      {
+        "malicious_pct": 40.0,
+        "accuracy": 0.4594736842105263
+      }
+    ],
+    "Trimmed Mean": [
+      {
+        "malicious_pct": 0.0,
+        "accuracy": 0.531578947368421
+      },
+      {
+        "malicious_pct": 10.0,
+        "accuracy": 0.531578947368421
+      },
+      {
+        "malicious_pct": 20.0,
+        "accuracy": 0.5484210526315789
+      },
+      {
+        "malicious_pct": 30.0,
+        "accuracy": 0.5484210526315789
+      },
+      {
+        "malicious_pct": 40.0,
+        "accuracy": 0.4394736842105263
+      }
+    ]
+  }
+}

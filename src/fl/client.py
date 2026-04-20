@@ -1,8 +1,23 @@
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+
+
+def _is_expert_param(name: str) -> Tuple[bool, int]:
+    """
+    Heuristic: parameters under moe.experts.<idx>.* are expert parameters.
+    Returns (is_expert, expert_index or -1).
+    """
+    parts = name.split(".")
+    for i in range(len(parts) - 2):
+        if parts[i] == "moe" and parts[i + 1] == "experts":
+            try:
+                return True, int(parts[i + 2])
+            except ValueError:
+                return True, -1
+    return False, -1
 
 
 def local_train(
@@ -12,21 +27,36 @@ def local_train(
     batch_size: int,
     lr: float,
     device: torch.device,
-) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], int, int, int]:
+    top_k_sparse: int = 2,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], int, int, int, List[int], torch.Tensor]:
     """
-    Simple local training loop for one client.
+    Local training loop for one client.
+
+    All parameters (including embedding) are trained.  The dense update
+    contains the full model state.  The sparse update excludes expert
+    parameters that were *not* among the Top-K most-routed experts,
+    demonstrating the MoE communication advantage.
 
     Returns:
-        state_dict (only trainable params) and number of samples used.
+        full_state    -- complete model state (dense update)
+        sparse_state  -- model state excluding non-Top-K expert params
+        n_samples     -- number of training samples processed
+        dense_bytes   -- bytes for the dense update
+        sparse_bytes  -- bytes for the sparse update
+        top_k_indices -- which expert indices were selected as Top-K
+        expert_usage  -- (num_experts,) tensor of accumulated routing probs
     """
     model = model.to(device)
     model.train()
 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
+    # Track expert usage via router outputs
+    expert_usage = None
     n_samples = 0
+
     for _ in range(epochs):
         for batch in loader:
             input_ids, labels = batch
@@ -35,43 +65,55 @@ def local_train(
             n_samples += labels.size(0)
 
             optimizer.zero_grad()
-            logits = model(input_ids)
+
+            # Forward through submodules to capture router probs
+            x = model.embedding(input_ids)
+            x = x.mean(dim=1)
+            x, router_probs = model.moe(x)
+            logits = model.classifier(x)
+
             loss = criterion(logits, labels)
             loss.backward()
             optimizer.step()
 
-    # For Phase 1/2, return the full model state plus a sparse (Top-K experts) view
-    # and communication statistics.
-    full_state = {name: p.detach().cpu().clone() for name, p in model.state_dict().items()}
+            # Accumulate expert usage (sum of routing probabilities)
+            with torch.no_grad():
+                batch_usage = router_probs.sum(dim=0)  # (num_experts,)
+                if expert_usage is None:
+                    expert_usage = batch_usage
+                else:
+                    expert_usage += batch_usage
 
-    def _is_expert_param(name: str) -> Tuple[bool, int]:
-        """
-        Heuristic: parameters under moe.experts.<idx>.* are expert parameters.
-        Returns (is_expert, expert_index or -1).
-        """
-        parts = name.split(".")
-        for i in range(len(parts) - 2):
-            if parts[i] == "moe" and parts[i + 1] == "experts":
-                try:
-                    return True, int(parts[i + 2])
-                except ValueError:
-                    return True, -1
-        return False, -1
+    # Select Top-K most-used experts based on actual router statistics
+    if expert_usage is not None:
+        top_k_indices = expert_usage.topk(top_k_sparse).indices.cpu().tolist()
+    else:
+        top_k_indices = list(range(top_k_sparse))
+    top_k_set = set(top_k_indices)
 
+    # Build full (dense) and sparse states
+    full_state: Dict[str, torch.Tensor] = {}
+    sparse_state: Dict[str, torch.Tensor] = {}
     dense_bytes = 0
     sparse_bytes = 0
-    top_k_sparse = 2  # fixed K for Phase 2 comm accounting / sparse view
 
-    sparse_state: Dict[str, torch.Tensor] = {}
+    for name, tensor in model.state_dict().items():
+        t = tensor.detach().cpu().clone()
+        num_bytes = t.numel() * t.element_size()
 
-    for name, tensor in full_state.items():
-        num_bytes = tensor.numel() * tensor.element_size()
+        full_state[name] = t
         dense_bytes += num_bytes
 
         is_expert, idx = _is_expert_param(name)
-        if not is_expert or (0 <= idx < top_k_sparse):
+        # Include in sparse: everything except non-selected experts
+        if not is_expert or idx in top_k_set:
+            sparse_state[name] = t
             sparse_bytes += num_bytes
-            sparse_state[name] = tensor
 
-    return full_state, sparse_state, n_samples, dense_bytes, sparse_bytes
+    # Normalise expert usage; fallback to zeros if no data was processed
+    if expert_usage is None:
+        expert_usage = torch.zeros(top_k_sparse)
+    expert_usage = expert_usage.detach().cpu()
+
+    return full_state, sparse_state, n_samples, dense_bytes, sparse_bytes, top_k_indices, expert_usage
 

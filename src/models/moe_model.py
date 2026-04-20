@@ -137,3 +137,48 @@ class MoETextClassifier(nn.Module):
         logits = self.classifier(x)
         return logits
 
+
+CLASS_NAMES = ["World", "Sports", "Business", "Tech"]
+
+
+def predict_with_routing(
+    model: MoETextClassifier,
+    text: str,
+    vocab: dict,
+    seq_len: int = 64,
+    device: torch.device = torch.device("cpu"),
+) -> dict:
+    """Run inference on raw text and return prediction + expert routing info."""
+    model.to(device).eval()
+
+    # Encode
+    tokens = text.lower().split()
+    ids = [vocab.get(tok, 0) for tok in tokens]
+    if not ids:
+        ids = [0]
+    ids = ids[:seq_len]
+    ids = ids + [0] * (seq_len - len(ids))
+    input_ids = torch.tensor([ids], dtype=torch.long, device=device)
+
+    with torch.no_grad():
+        x = model.embedding(input_ids)
+        x = x.mean(dim=1)
+        x, router_probs = model.moe(x)
+        logits = model.classifier(x)
+        probs = F.softmax(logits, dim=-1)
+
+    pred = probs.argmax(dim=-1).item()
+    rp = router_probs.squeeze(0).cpu()
+    topk_vals, topk_idx = torch.topk(rp, model.moe.k)
+
+    return {
+        "predicted_class": pred,
+        "predicted_label": CLASS_NAMES[pred] if pred < len(CLASS_NAMES) else str(pred),
+        "class_probs": {CLASS_NAMES[i]: probs[0, i].item() for i in range(probs.size(1))},
+        "router_probs": rp,                       # (num_experts,)
+        "top_k_experts": topk_idx.tolist(),
+        "top_k_weights": topk_vals.tolist(),
+        "tokens": tokens,
+        "oov_tokens": [t for t in tokens if t not in vocab],
+    }
+

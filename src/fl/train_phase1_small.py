@@ -19,10 +19,11 @@ class FLConfigPhase1:
     lora_r: int = 8
 
     num_clients: int = 4
-    rounds: int = 10
-    local_epochs: int = 3
-    batch_size: int = 32
-    lr: float = 1e-3
+    rounds: int = 15
+    local_epochs: int = 2
+    batch_size: int = 16
+    lr: float = 5e-4
+    repeat: int = 50
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -50,16 +51,26 @@ def set_seed(seed: int = 42) -> None:
 
 
 def main():
-    print("Running Phase 1: small in-code corpus, single global model.")
+    print("=" * 65)
+    print("  Phase 1: Baseline FL with MoE + LoRA (small corpus)")
+    print("=" * 65)
     set_seed(42)
     cfg = FLConfigPhase1()
     device = torch.device(cfg.device)
 
-    # Use built-in small corpus for fast experiments
-    clients, test_dataset, vocab_size, num_classes = build_ag_news_clients(
-        num_clients=cfg.num_clients, seq_len=cfg.seq_len, use_external_csv=False
+    clients, test_dataset, vocab_size, num_classes, _vocab = build_ag_news_clients(
+        num_clients=cfg.num_clients, seq_len=cfg.seq_len,
+        use_external_csv=False, repeat=cfg.repeat,
     )
     train_eval_dataset: Dataset = ConcatDataset(clients)
+
+    print(f"  Clients: {len(clients)}, "
+          f"Train samples: {len(train_eval_dataset)}, "
+          f"Test samples: {len(test_dataset)}")
+    print(f"  Vocab: {vocab_size}, Classes: {num_classes}")
+    print(f"  Rounds: {cfg.rounds}, Local epochs: {cfg.local_epochs}, "
+          f"LR: {cfg.lr}, Batch: {cfg.batch_size}")
+    print("-" * 65)
 
     global_model = MoETextClassifier(
         vocab_size=vocab_size,
@@ -86,7 +97,7 @@ def main():
             )
             client_model.load_state_dict(server.get_global_state(), strict=False)
 
-            full_state, _, n, _, _ = local_train(
+            full_state, _, n, _, _, _, _ = local_train(
                 client_model,
                 client_dataset,
                 epochs=cfg.local_epochs,
@@ -99,7 +110,10 @@ def main():
         server.aggregate(client_states)
         train_acc = evaluate(server.global_model, train_eval_dataset, cfg.batch_size, device)
         test_acc = evaluate(server.global_model, test_dataset, cfg.batch_size, device)
-        print(f"Round {rnd}: train_acc = {train_acc:.4f}, test_acc = {test_acc:.4f}")
+        print(f"  Round {rnd:2d}:  train_acc = {train_acc:.4f}  |  test_acc = {test_acc:.4f}")
+
+    print("-" * 65)
+    print("  Phase 1 complete.")
 
 
 if __name__ == "__main__":

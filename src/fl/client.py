@@ -28,6 +28,7 @@ def local_train(
     lr: float,
     device: torch.device,
     top_k_sparse: int = 2,
+    fedprox_mu: float = 0.0,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], int, int, int, List[int], torch.Tensor]:
     """
     Local training loop for one client.
@@ -36,6 +37,12 @@ def local_train(
     contains the full model state.  The sparse update excludes expert
     parameters that were *not* among the Top-K most-routed experts,
     demonstrating the MoE communication advantage.
+
+    If ``fedprox_mu > 0``, FedProx (Li et al. 2020) regularisation is added:
+    the loss includes a (mu/2) * ||theta - theta_global||^2 proximal term
+    that pulls local weights back toward the global model.  This keeps
+    heterogeneous clients from drifting too far apart in non-IID settings.
+    With ``fedprox_mu = 0`` the function behaves exactly like vanilla FL.
 
     Returns:
         full_state    -- complete model state (dense update)
@@ -52,6 +59,12 @@ def local_train(
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # Snapshot the global weights (theta_t) BEFORE local training, for FedProx
+    global_snapshot: Dict[str, torch.Tensor] = {}
+    if fedprox_mu > 0:
+        for name, p in model.named_parameters():
+            global_snapshot[name] = p.detach().clone()
 
     # Track expert usage via router outputs
     expert_usage = None
@@ -73,6 +86,15 @@ def local_train(
             logits = model.classifier(x)
 
             loss = criterion(logits, labels)
+
+            # FedProx proximal term: (mu/2) * sum_p ||theta_p - theta_p_global||^2
+            if fedprox_mu > 0:
+                prox = 0.0
+                for name, p in model.named_parameters():
+                    if name in global_snapshot:
+                        prox = prox + ((p - global_snapshot[name]) ** 2).sum()
+                loss = loss + 0.5 * fedprox_mu * prox
+
             loss.backward()
             optimizer.step()
 

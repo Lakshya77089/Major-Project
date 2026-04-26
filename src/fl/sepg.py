@@ -96,3 +96,133 @@ def verify_proof(
         return False, "hash mismatch — update was tampered with"
 
     return True, "all checks passed"
+
+
+# ============================================================================
+# Verifiable Oracle Committee (F3)
+# ============================================================================
+# Stand-in for "threshold signatures" from the proposal.  Multiple oracle
+# nodes independently score each client's update; the final decision is the
+# median (Byzantine-robust against up to floor((M-1)/2) misbehaving oracles).
+# Each vote is hash-signed for auditability.  This is the lightweight,
+# blockchain-free version: production deployments would replace per-vote hashes
+# with BLS / threshold ECDSA signatures.
+
+
+@dataclass
+class OracleVote:
+    """A single oracle node's score for one client's update."""
+    oracle_id: int
+    client_id: int
+    round_id: int
+    score: float            # in [0, 1] -- higher = better
+    rationale: str          # short text explaining the score
+    vote_hash: str          # SHA-256 of (oracle_id, client_id, round_id, score)
+
+
+@dataclass
+class CommitteeAttestation:
+    """Aggregate decision of an M-oracle committee for one client's update."""
+    client_id: int
+    round_id: int
+    median_score: float
+    votes: List[OracleVote]
+    accepted: bool          # median_score >= acceptance_threshold
+
+
+def _hash_vote(oracle_id: int, client_id: int, round_id: int, score: float) -> str:
+    msg = f"{oracle_id}|{client_id}|{round_id}|{score:.6f}".encode("utf-8")
+    return hashlib.sha256(msg).hexdigest()[:16]
+
+
+def oracle_score(
+    oracle_id: int,
+    client_id: int,
+    round_id: int,
+    sparse_state: Dict[str, torch.Tensor],
+    expected_k: int,
+    proof: Optional[SEPGProof] = None,
+    seed_offset: int = 0,
+) -> OracleVote:
+    """
+    Independent oracle scoring of one client's update.
+
+    Heuristics combined with deterministic per-oracle randomness so different
+    oracles vote slightly differently (modelling honest-but-noisy oracles):
+
+      * Update L2 norm sanity (too large -> low score)
+      * Top-K compliance via the SEPG proof (if provided)
+      * Tiny per-oracle perturbation so votes differ
+    """
+    # Compute update L2 norm
+    flat = torch.cat([t.float().flatten() for t in sparse_state.values()])
+    norm = float(flat.norm(2).item())
+
+    # Base score: 1.0 if norm is in [0, 5], decaying linearly above
+    if norm <= 5.0:
+        base = 1.0
+    else:
+        base = max(0.0, 1.0 - (norm - 5.0) / 10.0)
+
+    # Top-K check from proof
+    proof_ok = 1.0
+    if proof is not None and len(proof.top_k_indices) != expected_k:
+        proof_ok = 0.0
+
+    # Per-oracle deterministic noise (not random across runs)
+    noise_seed = (oracle_id + seed_offset) * 1009 + client_id * 31 + round_id
+    noise = (((noise_seed % 100) / 100.0) - 0.5) * 0.1   # ~ [-0.05, +0.05]
+
+    score = max(0.0, min(1.0, base * proof_ok + noise))
+    rationale = (
+        f"||delta||_2={norm:.2f} -> base={base:.2f}; "
+        f"proof_ok={proof_ok:.0f}; oracle_perturb={noise:+.3f}"
+    )
+    return OracleVote(
+        oracle_id=oracle_id,
+        client_id=client_id,
+        round_id=round_id,
+        score=score,
+        rationale=rationale,
+        vote_hash=_hash_vote(oracle_id, client_id, round_id, score),
+    )
+
+
+def committee_decision(
+    num_oracles: int,
+    client_id: int,
+    round_id: int,
+    sparse_state: Dict[str, torch.Tensor],
+    expected_k: int,
+    proof: Optional[SEPGProof] = None,
+    acceptance_threshold: float = 0.5,
+) -> CommitteeAttestation:
+    """
+    Run an M-oracle committee on one client's update.
+
+    Each oracle votes independently, the committee takes the median score,
+    and the update is accepted if median >= acceptance_threshold.  This is
+    Byzantine-robust against up to floor((M-1)/2) malicious oracles
+    (the median is unaffected by minority outliers).
+    """
+    votes = [
+        oracle_score(
+            oracle_id=k, client_id=client_id, round_id=round_id,
+            sparse_state=sparse_state, expected_k=expected_k, proof=proof,
+        )
+        for k in range(num_oracles)
+    ]
+    scores = sorted(v.score for v in votes)
+    if num_oracles == 0:
+        median = 0.0
+    elif num_oracles % 2 == 1:
+        median = scores[num_oracles // 2]
+    else:
+        median = 0.5 * (scores[num_oracles // 2 - 1] + scores[num_oracles // 2])
+    return CommitteeAttestation(
+        client_id=client_id,
+        round_id=round_id,
+        median_score=median,
+        votes=votes,
+        accepted=(median >= acceptance_threshold),
+    )

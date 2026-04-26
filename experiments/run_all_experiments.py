@@ -26,12 +26,17 @@ from torch.utils.data import ConcatDataset, DataLoader, Dataset
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.models import MoETextClassifier
-from src.data import build_ag_news_clients
+from src.data import (
+    build_ag_news_clients,
+    build_ag_news_clients_noniid,
+    client_class_distribution,
+)
 from src.fl.client import local_train
 from src.fl.server import FedServer
-from src.fl.dp import apply_dp, PrivacyAccountant
+from src.fl.dp import apply_dp, PrivacyAccountant, RenyiAccountant
 from src.fl.sepg import generate_proof, verify_proof
 from src.fl.adversaries import poisoning_train, freerider_train, sybil_clones
+from src.fl.attacks import membership_inference_attack
 
 PLOT_DIR = Path(__file__).resolve().parents[1] / "plots"
 PLOT_DIR.mkdir(exist_ok=True)
@@ -348,6 +353,308 @@ def experiment_robustness():
 
 
 # ============================================================
+# EXPERIMENT 5: Non-IID data (Dirichlet alpha sweep)
+# ============================================================
+def experiment_noniid():
+    print("\n" + "=" * 60)
+    print("  Experiment 5: Non-IID Data (Dirichlet alpha sweep)")
+    print("=" * 60)
+
+    ROUNDS = 3
+    alphas = [0.1, 0.3, 0.5, 1.0, 5.0, 100.0]
+    results = []
+
+    for alpha in alphas:
+        set_seed()
+        clients, test_ds, vs, nc, _ = build_ag_news_clients_noniid(
+            num_clients=5, alpha=alpha, use_external_csv=True, seed=42,
+        )
+        kw = make_model_kw(vs, nc)
+        srv = FedServer(MoETextClassifier(**kw), device=DEVICE)
+
+        # Record per-client class distribution for this alpha
+        client_dists = []
+        for c in clients:
+            dist = client_class_distribution(c, nc).tolist()
+            client_dists.append(dist)
+
+        for rnd in range(ROUNDS):
+            ds, _ = fl_round(srv, clients, kw)
+            srv.aggregate(ds)
+
+        acc = evaluate(srv.global_model, test_ds)
+        results.append({
+            "alpha": alpha, "accuracy": acc, "client_dists": client_dists,
+        })
+        print(f"  alpha={alpha:>5.1f}  acc={acc:.4f}  "
+              f"clients[0]={client_dists[0]}")
+
+    # Plot: alpha (log scale) vs accuracy
+    fig, ax = plt.subplots(figsize=(8, 5))
+    xs = [r["alpha"] for r in results]
+    ys = [r["accuracy"] for r in results]
+    ax.plot(xs, ys, "o-", linewidth=2, markersize=8, color="#4C72B0")
+    ax.set_xscale("log")
+    ax.set_xlabel("Dirichlet α (log scale)  — lower = more non-IID", fontsize=12)
+    ax.set_ylabel("Test Accuracy", fontsize=12)
+    ax.set_title("Non-IID Robustness: Accuracy vs Dirichlet α", fontsize=13)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0, 1)
+    fig.tight_layout()
+    fig.savefig(PLOT_DIR / "exp5_noniid.png", dpi=150)
+    plt.close(fig)
+    print(f"  Saved: plots/exp5_noniid.png")
+    return results
+
+
+# ============================================================
+# EXPERIMENT 6: Membership Inference Attack (DP ON vs OFF)
+# ============================================================
+def experiment_mia():
+    print("\n" + "=" * 60)
+    print("  Experiment 6: Membership Inference Attack")
+    print("=" * 60)
+
+    from torch.utils.data import ConcatDataset
+
+    ROUNDS = 3
+    results = []
+    # Wider range so we see the effect emerge with slightly more rounds
+    configs = [
+        ("No DP", None, None),
+        ("DP σ=0.1", 1.0, 0.1),
+        ("DP σ=0.5", 1.0, 0.5),
+        ("DP σ=1.0", 1.0, 1.0),
+    ]
+
+    clients_base, test_ds_base, vs, nc, _ = load_data(5)
+
+    for label, clip, sigma in configs:
+        set_seed()
+        kw = make_model_kw(vs, nc)
+        srv = FedServer(MoETextClassifier(**kw), device=DEVICE)
+
+        for rnd in range(ROUNDS):
+            ds, _ = fl_round(
+                srv, clients_base, kw,
+                dp_clip=clip, dp_noise=sigma,
+            )
+            srv.aggregate(ds)
+
+        acc = evaluate(srv.global_model, test_ds_base)
+
+        # MIA: members = first 2 clients, non-members = test set
+        members = ConcatDataset(clients_base[:2])
+        mia = membership_inference_attack(
+            srv.global_model, members, test_ds_base,
+            device=DEVICE, max_samples=300,
+        )
+        results.append({
+            "config": label,
+            "clip": clip, "sigma": sigma,
+            "accuracy": acc,
+            "mia_auc": mia.auc,
+            "mia_acc": mia.attack_accuracy,
+            "train_loss": mia.train_loss_mean,
+            "nonmember_loss": mia.nonmember_loss_mean,
+        })
+        print(f"  {label:>12s}  acc={acc:.4f}  "
+              f"MIA AUC={mia.auc:.3f}  (member_loss={mia.train_loss_mean:.3f}, "
+              f"nonmem_loss={mia.nonmember_loss_mean:.3f})")
+
+    # Plot: MIA AUC with DP ON vs OFF
+    fig, ax = plt.subplots(figsize=(8, 5))
+    labels = [r["config"] for r in results]
+    aucs = [r["mia_auc"] for r in results]
+    accs = [r["accuracy"] for r in results]
+
+    x = range(len(labels))
+    ax.bar([i - 0.2 for i in x], aucs, width=0.4,
+           color="#DD8452", label="MIA AUC (lower=better privacy)")
+    ax.bar([i + 0.2 for i in x], accs, width=0.4,
+           color="#4C72B0", label="Test Accuracy")
+    ax.axhline(0.5, color="gray", linestyle="--", alpha=0.5,
+               label="MIA random baseline (0.5)")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels)
+    ax.set_ylabel("Value", fontsize=12)
+    ax.set_title("Membership Inference: DP reduces leakage", fontsize=13)
+    ax.set_ylim(0, 1)
+    ax.legend(fontsize=10, loc="lower right")
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    fig.savefig(PLOT_DIR / "exp6_mia.png", dpi=150)
+    plt.close(fig)
+    print(f"  Saved: plots/exp6_mia.png")
+    return results
+
+
+# ============================================================
+# EXPERIMENT 7: FedProx vs FedAvg under non-IID data
+# ============================================================
+def experiment_fedprox():
+    """
+    Compare vanilla FedAvg vs. FedProx (mu>0) under Dirichlet non-IID.
+
+    Hypothesis: at small alpha (skewed data), FedProx's proximal term
+    keeps clients from drifting and improves convergence vs. vanilla FedAvg.
+    """
+    print("\n" + "=" * 60)
+    print("  Experiment 7: FedProx vs FedAvg under non-IID data")
+    print("=" * 60)
+
+    ROUNDS = 3
+    alpha = 0.3  # strong non-IID
+    mu_values = [0.0, 0.001, 0.01, 0.1, 0.5]
+    results = []
+
+    for mu in mu_values:
+        set_seed()
+        clients, test_ds, vs, nc, _ = build_ag_news_clients_noniid(
+            num_clients=5, alpha=alpha, use_external_csv=True, seed=42,
+        )
+        kw = make_model_kw(vs, nc)
+        srv = FedServer(MoETextClassifier(**kw), device=DEVICE)
+
+        for rnd in range(ROUNDS):
+            states = []
+            for ci, cds in enumerate(clients):
+                cm = MoETextClassifier(**kw)
+                cm.load_state_dict(srv.get_global_state(), strict=False)
+                fs, _, n, _, _, _, _ = local_train(
+                    cm, cds, epochs=1, batch_size=64, lr=2e-3,
+                    device=DEVICE, top_k_sparse=2, fedprox_mu=mu,
+                )
+                states.append((fs, n))
+            srv.aggregate(states)
+
+        acc = evaluate(srv.global_model, test_ds)
+        label = "FedAvg" if mu == 0.0 else f"FedProx mu={mu}"
+        results.append({"mu": mu, "label": label, "alpha": alpha, "accuracy": acc})
+        print(f"  {label:>20s}  alpha={alpha}  acc={acc:.4f}")
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(8, 5))
+    labels = [r["label"] for r in results]
+    accs   = [r["accuracy"] for r in results]
+    colors = ["#4C72B0" if r["mu"] == 0.0 else "#DD8452" for r in results]
+    ax.bar(labels, accs, color=colors, alpha=0.85)
+    ax.axhline(y=accs[0], color="#4C72B0", linestyle="--", alpha=0.4,
+               label=f"FedAvg baseline = {accs[0]:.3f}")
+    ax.set_ylabel("Test Accuracy", fontsize=12)
+    ax.set_title(f"FedProx vs FedAvg at non-IID Dirichlet alpha={alpha}",
+                 fontsize=13)
+    ax.set_ylim(0, max(accs) * 1.15)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3, axis="y")
+    plt.xticks(rotation=15)
+    fig.tight_layout()
+    fig.savefig(PLOT_DIR / "exp7_fedprox.png", dpi=150)
+    plt.close(fig)
+    print(f"  Saved: plots/exp7_fedprox.png")
+    return results
+
+
+# ============================================================
+# EXPERIMENT 8: Ledger throughput + MiMC vs SHA-256
+# ============================================================
+def experiment_chain_overhead():
+    """
+    Two micro-benchmarks for the on-chain layer:
+      (A) Pure-Python ledger throughput: how many transactions per second
+          the Ledger can ingest, seal, and verify.
+      (B) ZK-friendly hash overhead: SHA-256 vs MiMC for SEPG-sized state.
+    """
+    print("\n" + "=" * 60)
+    print("  Experiment 8: Ledger throughput + MiMC vs SHA-256")
+    print("=" * 60)
+
+    from src.chain import Ledger
+    from src.fl.zkhash import zkhash_benchmark
+
+    # (A) Ledger throughput
+    n_tx_values = [10, 100, 500, 1000]
+    ledger_results = []
+    for n_tx in n_tx_values:
+        ledger = Ledger()
+        t0 = time.perf_counter()
+        for i in range(n_tx):
+            ledger.add_transaction(
+                "verify", client_id=i % 10, round=1, accepted=True,
+                proof_hash=f"{i:032x}",
+            )
+        ledger.seal_block()
+        seal_ms = (time.perf_counter() - t0) * 1000.0
+
+        t0 = time.perf_counter()
+        ok, _ = ledger.verify()
+        verify_ms = (time.perf_counter() - t0) * 1000.0
+
+        ledger_results.append({
+            "n_tx": n_tx, "seal_ms": seal_ms, "verify_ms": verify_ms,
+            "tx_per_sec_seal": n_tx / max(seal_ms, 1e-6) * 1000.0,
+            "ok": ok,
+        })
+        print(f"  Ledger n={n_tx:>4d}  seal={seal_ms:>7.2f}ms  "
+              f"verify={verify_ms:>7.2f}ms  ok={ok}")
+
+    # (B) MiMC vs SHA-256 for an SEPG-sized state (~600K params)
+    print()
+    state_sizes = [
+        ("tiny (1K)",    {"w": torch.randn(32, 32)}),
+        ("small (10K)",  {"w": torch.randn(100, 100)}),
+        ("medium (100K)",{"w": torch.randn(316, 316)}),
+    ]
+    hash_results = []
+    for label, st in state_sizes:
+        bench = zkhash_benchmark(st, n_trials=3)
+        hash_results.append({
+            "size_label": label,
+            "sha256_ms": bench["sha256_ms"],
+            "mimc_ms":   bench["mimc_ms"],
+            "ratio":     bench["ratio"],
+        })
+        print(f"  Hash {label:>15s}  SHA={bench['sha256_ms']:>7.2f}ms  "
+              f"MiMC={bench['mimc_ms']:>9.2f}ms  ratio={bench['ratio']:.0f}x")
+
+    # Plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # (A) Ledger throughput
+    ns = [r["n_tx"] for r in ledger_results]
+    seals = [r["seal_ms"] for r in ledger_results]
+    vers  = [r["verify_ms"] for r in ledger_results]
+    ax1.plot(ns, seals, "o-", color="#4C72B0", linewidth=2, label="Seal")
+    ax1.plot(ns, vers,  "s-", color="#DD8452", linewidth=2, label="Verify")
+    ax1.set_xlabel("Transactions per block", fontsize=12)
+    ax1.set_ylabel("Time (ms)", fontsize=12)
+    ax1.set_title("Pure-Python Ledger Throughput", fontsize=13)
+    ax1.legend(fontsize=11)
+    ax1.grid(True, alpha=0.3)
+
+    # (B) Hash comparison
+    sizes = [r["size_label"] for r in hash_results]
+    sha = [r["sha256_ms"] for r in hash_results]
+    mimc = [r["mimc_ms"] for r in hash_results]
+    x = np.arange(len(sizes))
+    ax2.bar(x - 0.2, sha,  width=0.4, color="#55A868", label="SHA-256 (current)")
+    ax2.bar(x + 0.2, mimc, width=0.4, color="#8172B2", label="MiMC (ZK-friendly)")
+    ax2.set_xticks(list(x))
+    ax2.set_xticklabels(sizes)
+    ax2.set_ylabel("Time per hash (ms)", fontsize=12)
+    ax2.set_title("ZK-friendly Hash Overhead", fontsize=13)
+    ax2.legend(fontsize=11)
+    ax2.set_yscale("log")
+    ax2.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    fig.savefig(PLOT_DIR / "exp8_chain_overhead.png", dpi=150)
+    plt.close(fig)
+    print(f"  Saved: plots/exp8_chain_overhead.png")
+
+    return {"ledger": ledger_results, "hash_overhead": hash_results}
+
+
+# ============================================================
 # MAIN
 # ============================================================
 if __name__ == "__main__":
@@ -358,6 +665,10 @@ if __name__ == "__main__":
     r2 = experiment_comm_vs_k()
     r3 = experiment_verification_overhead()
     r4 = experiment_robustness()
+    r5 = experiment_noniid()
+    r6 = experiment_mia()
+    r7 = experiment_fedprox()
+    r8 = experiment_chain_overhead()
 
     # Save all results
     all_results = {
@@ -365,6 +676,10 @@ if __name__ == "__main__":
         "comm_vs_k": r2,
         "verification_overhead": r3,
         "robustness": r4,
+        "noniid_dirichlet": r5,
+        "mia_dp_on_off": r6,
+        "fedprox_vs_fedavg": r7,
+        "chain_overhead": r8,
     }
     with open(PLOT_DIR / "experiment_results.json", "w") as f:
         json.dump(all_results, f, indent=2, default=str)

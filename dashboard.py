@@ -17,12 +17,28 @@ import streamlit as st
 import torch
 from torch.utils.data import ConcatDataset, DataLoader, random_split
 
-from src.data.text_datasets import TextClassificationDataset, build_ag_news_clients
+from src.data.text_datasets import (
+    TextClassificationDataset,
+    build_ag_news_clients,
+    build_ag_news_clients_noniid,
+    client_class_distribution,
+    dirichlet_split,
+)
 from src.fl.adversaries import freerider_train, poisoning_train, sybil_clones
+from src.fl.attacks import membership_inference_attack
+from src.fl.bidding import (
+    ResourceBid, BidCommitment,
+    fresh_nonce, commit_bid, verify_bid, run_auction,
+)
 from src.fl.client import local_train
-from src.fl.dp import PrivacyAccountant, apply_dp
-from src.fl.sepg import generate_proof, verify_proof
+from src.fl.dp import PrivacyAccountant, RenyiAccountant, apply_dp
+from src.fl.sepg import (
+    generate_proof, verify_proof,
+    committee_decision, oracle_score,
+)
 from src.fl.server import FedServer
+from src.fl.zkhash import benchmark_compare as zkhash_benchmark
+from src.chain.ledger import Ledger
 from src.models.moe_model import MoETextClassifier, predict_with_routing
 
 # ---------------------------------------------------------------
@@ -131,6 +147,12 @@ def set_seed(s=42):
     torch.manual_seed(s)
 
 
+def _rand_client_id():
+    """Pick a client id 1..10 for ledger demo transactions."""
+    import random as _r
+    return _r.randint(1, 10)
+
+
 def page_banner(title: str, subtitle: str, icon: str = ""):
     st.markdown(f"""
     <div class="page-banner">
@@ -228,6 +250,7 @@ st.sidebar.title("zkFedMoE")
 page = st.sidebar.radio(
     "Navigate",
     ["🏠 Home", "Predict", "Train", "Custom CSV", "Privacy & DP", "Robustness",
+     "Non-IID & MIA", "Bidding & Oracle", "Chain Explorer",
      "Experiments", "Compare", "Architecture", "About"],
 )
 st.sidebar.divider()
@@ -581,19 +604,28 @@ elif page == "Train":
                                   [1e-4, 5e-4, 1e-3, 2e-3, 5e-3], value=2e-3)
     use_ag     = c6.checkbox("AG News (120K)", value=True)
 
-    # DP and SEPG toggles
+    # DP, SEPG, and FedProx toggles
     st.divider()
-    dp_col, sepg_col = st.columns(2)
-    use_dp   = dp_col.toggle("Enable Differential Privacy", value=False)
-    use_sepg = sepg_col.toggle("Enable SEPG Proof Verification", value=False)
+    dp_col, sepg_col, prox_col = st.columns(3)
+    use_dp     = dp_col.toggle("Enable Differential Privacy", value=False)
+    use_sepg   = sepg_col.toggle("Enable SEPG Proof Verification", value=False)
+    use_prox   = prox_col.toggle("Enable FedProx (heterogeneity)", value=False,
+                                 help="Adds (mu/2)*||theta - theta_global||^2 proximal term to local "
+                                      "loss. Helps under non-IID data.")
 
     # FIX #3 — always define clip_norm / noise_mult so training loop never NameErrors
     clip_norm  = 1.0
     noise_mult = 0.5
+    fedprox_mu = 0.0
     if use_dp:
         dp_c1, dp_c2 = st.columns(2)
         clip_norm  = dp_c1.slider("Clip Norm (C)", 0.1, 5.0, 1.0, step=0.1)
         noise_mult = dp_c2.slider("Noise Multiplier (σ)", 0.0, 2.0, 0.5, step=0.1)
+    if use_prox:
+        fedprox_mu = st.select_slider(
+            "FedProx μ", options=[0.001, 0.01, 0.05, 0.1, 0.5, 1.0],
+            value=0.01, key="fedprox_mu",
+        )
 
     if st.button("Start Training", type="primary", use_container_width=True):
         # FIX #10 — wrap entire training in try/except
@@ -666,7 +698,9 @@ elif page == "Train":
                     cm = MoETextClassifier(**kw)
                     cm.load_state_dict(srv_d.get_global_state(), strict=False)
                     fs, sp, n, db, sb, tki, eu = local_train(
-                        cm, cds, 1, 64, lr, dev, top_k_sparse=top_k)
+                        cm, cds, 1, 64, lr, dev, top_k_sparse=top_k,
+                        fedprox_mu=fedprox_mu,
+                    )
                     rd += db
                     rs += sb
 
@@ -795,6 +829,19 @@ elif page == "Privacy & DP":
                                   key="dp_noise")
     num_rounds_dp  = col3.slider("Rounds", 1, 10, 5, key="dp_rounds")
 
+    # NEW: Renyi DP + Secure Aggregation toggles
+    adv_col1, adv_col2 = st.columns(2)
+    use_renyi = adv_col1.toggle(
+        "Use Rényi DP accountant (tighter bound)", value=True, key="dp_renyi",
+        help="Uses Rényi DP composition (Mironov 2017) — the standard in Opacus/TF-Privacy. "
+             "Gives the correct ε bound; the basic √T composition can be misleadingly optimistic.",
+    )
+    use_secure_agg = adv_col2.toggle(
+        "Use Secure Aggregation (pairwise masking)", value=False, key="dp_secure",
+        help="Bonawitz-style pairwise masking: the server only sees the SUM of updates, "
+             "not any individual client's update. Masks cancel on aggregation.",
+    )
+
     st.info(
         f"**Gaussian Mechanism:** Each update clipped to ‖Δ‖₂ ≤ {clip_norm_dp:.1f}, "
         f"then noise N(0, ({noise_mult_dp:.2f}×{clip_norm_dp:.1f})²) added per parameter."
@@ -820,12 +867,15 @@ elif page == "Privacy & DP":
 
             kw = dict(vocab_size=vs, embed_dim=64, num_classes=nc,
                       num_experts=8, expert_hidden_dim=256, k=2, lora_r=8)
-            srv        = FedServer(MoETextClassifier(**kw), device=dev)
-            accountant = PrivacyAccountant(target_delta=1e-5)
+            srv = FedServer(MoETextClassifier(**kw), device=dev)
+            # Track BOTH accountants so we can display the comparison
+            accountant_basic = PrivacyAccountant(target_delta=1e-5)
+            accountant_renyi = RenyiAccountant(target_delta=1e-5)
 
             budget_chart = st.empty()
             eps_history  = []
             all_proofs   = []          # overwritten each round; last round shown
+            secure_residuals = []
 
             for rnd in range(1, num_rounds_dp + 1):
                 states     = []
@@ -841,25 +891,45 @@ elif page == "Privacy & DP":
                                      noise_multiplier=noise_mult_dp)
 
                     sr = min(64 / max(len(cds), 1), 1.0) if hasattr(cds, "__len__") else 0.01
-                    accountant.accumulate(noise_mult_dp, sr, num_steps=1)
-                    eps, delta = accountant.get_privacy_spent()
+                    accountant_basic.accumulate(noise_mult_dp, sr, num_steps=1)
+                    accountant_renyi.accumulate(noise_mult_dp, sr, num_steps=1)
+                    # Pick whichever accountant the user enabled for the proof & chart
+                    eps_active, delta = (
+                        accountant_renyi.get_privacy_spent()
+                        if use_renyi else accountant_basic.get_privacy_spent()
+                    )
 
                     proof = generate_proof(
                         client_id=ci, round_id=rnd,
                         top_k_indices=list(range(2)),
                         clip_norm=clip_norm_dp,
                         noise_multiplier=noise_mult_dp,
-                        epsilon=eps,
+                        epsilon=eps_active,
                         sparse_state=sp,
                     )
                     all_proofs.append((proof, sp))
                     states.append((fs_dp, n))
 
-                srv.aggregate(states)
+                # Aggregate using secure aggregation if enabled
+                if use_secure_agg and len(states) >= 2:
+                    diag = srv.aggregate_secure(states, round_id=rnd, mask_scale=0.05)
+                    secure_residuals.append(diag["max_residual"])
+                else:
+                    srv.aggregate(states)
+
                 acc = evaluate(srv.global_model, td, 64, dev)
-                eps, delta = accountant.get_privacy_spent()
-                eps_history.append({"Round": rnd, "ε (epsilon)": round(eps, 6),
-                                    "Accuracy": round(acc, 4)})
+                eps_basic, _ = accountant_basic.get_privacy_spent()
+                eps_renyi, _ = accountant_renyi.get_privacy_spent()
+                eps_active = eps_renyi if use_renyi else eps_basic
+                eps_history.append({
+                    "Round": rnd,
+                    "ε (active)": round(eps_active, 6),
+                    "ε (basic)":  round(eps_basic, 6),
+                    "ε (Rényi)":  round(eps_renyi, 6),
+                    "Accuracy":   round(acc, 4),
+                })
+                eps = eps_active
+                delta = 1e-5
 
                 progress_dp.progress(rnd / num_rounds_dp)
                 status_dp.markdown(
@@ -869,11 +939,16 @@ elif page == "Privacy & DP":
 
                 df_eps = pd.DataFrame(eps_history).set_index("Round")
                 fig_eps = go.Figure()
+                # Show both accountants on the same chart
                 fig_eps.add_trace(go.Scatter(
-                    x=df_eps.index, y=df_eps["ε (epsilon)"],
-                    mode="lines+markers", name="ε consumed",
+                    x=df_eps.index, y=df_eps["ε (Rényi)"],
+                    mode="lines+markers", name="ε (Rényi DP)",
                     line=dict(color="#DD8452", width=2),
-                    fill="tozeroy", fillcolor="rgba(221,132,82,0.15)",
+                ))
+                fig_eps.add_trace(go.Scatter(
+                    x=df_eps.index, y=df_eps["ε (basic)"],
+                    mode="lines+markers", name="ε (basic √T)",
+                    line=dict(color="#CF9F3C", width=2, dash="dot"),
                 ))
                 fig_eps.add_trace(go.Scatter(
                     x=df_eps.index, y=df_eps["Accuracy"],
@@ -882,7 +957,8 @@ elif page == "Privacy & DP":
                     yaxis="y2",
                 ))
                 fig_eps.update_layout(
-                    title="Privacy Budget Consumed vs Accuracy",
+                    title=("Privacy Budget vs Accuracy — "
+                           f"{'Rényi DP' if use_renyi else 'basic √T'} used for proofs"),
                     xaxis_title="Round",
                     yaxis=dict(title="ε (epsilon)", side="left"),
                     yaxis2=dict(title="Accuracy", side="right",
@@ -917,16 +993,37 @@ elif page == "Privacy & DP":
                         st.markdown(f"**Hash (SHA-256):** `{proof.update_hash[:20]}...`")
                         st.markdown(f"**Verification:** :{color}[**{badge}**] — {reason}")
 
-            st.subheader("Privacy Budget Summary")
+            st.subheader("Privacy Budget Summary (both accountants)")
             df_summary = pd.DataFrame(eps_history)
             st.dataframe(df_summary, hide_index=True, use_container_width=True)
 
-            final_eps = eps_history[-1]["ε (epsilon)"]
+            final = eps_history[-1]
+            concept_card(
+                "Rényi DP vs. basic √T composition",
+                "The Rényi accountant is the tight bound used by production libraries (Opacus, "
+                "TF-Privacy). The simple √T bound can under- or over-estimate ε depending on "
+                "the (σ, q) regime. Trust the Rényi column for any formal claim."
+            )
             st.success(
                 f"After {num_rounds_dp} rounds with σ={noise_mult_dp:.2f}: "
-                f"**ε = {final_eps:.4f}** (δ = 1e-5). "
-                f"Lower σ → stronger privacy but lower accuracy."
+                f"**ε (Rényi) = {final['ε (Rényi)']:.4f}**, "
+                f"ε (basic) = {final['ε (basic)']:.4f} (δ = 1e-5)."
             )
+
+            if use_secure_agg and secure_residuals:
+                st.subheader("Secure Aggregation Diagnostic")
+                max_res = max(secure_residuals)
+                st.metric(
+                    "Max mask-cancel residual across all rounds", f"{max_res:.2e}",
+                    help="Pairwise masks cancel to zero on sum. Residual near 1e-6 or "
+                         "smaller means the masked-sum equals the true sum to floating-"
+                         "point precision — server never sees individual updates."
+                )
+                insight_box(
+                    "Secure Aggregation is ACTIVE. The server aggregated only the "
+                    f"masked sum of {len(cl)} client updates. "
+                    "No individual client's update was visible to the server."
+                )
 
         except Exception as exc:
             progress_dp.empty()
@@ -1123,6 +1220,429 @@ elif page == "Robustness":
             status_rob.empty()
             st.error(f"Simulation failed: {exc}")
             raise
+
+
+# ---------------------------------------------------------------
+# PAGE: NON-IID & MIA  (F5 + F6)
+# ---------------------------------------------------------------
+elif page == "Non-IID & MIA":
+    page_banner(
+        "Non-IID Data & Membership Inference",
+        "Dirichlet(α) partitioning simulates real-world heterogeneous clients. "
+        "MIA measures how well DP protects training samples from leakage.",
+        "🧪",
+    )
+    flow_bar(
+        ["Dirichlet(α) split", "FL Train", "Measure MIA AUC", "DP ON vs OFF"],
+        "Dirichlet(α) split",
+    )
+
+    concept_card(
+        "Why non-IID matters",
+        "Real FL almost never has IID data. User A types about sports; user B about finance. "
+        "Our existing experiments use random_split (IID). Dirichlet(α) partitioning is the "
+        "standard way to simulate real heterogeneity: low α = each client skewed to few classes, "
+        "high α = approaches IID."
+    )
+    concept_card(
+        "Membership Inference Attack (MIA)",
+        "An attacker tries to guess whether a sample was in the training set. Members tend to "
+        "have LOWER loss (memorisation). We compute the AUC of this attack — 0.5 means random "
+        "guessing (DP is working), 1.0 means perfect leakage."
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+    alpha_niid = col1.select_slider(
+        "Dirichlet α", options=[0.1, 0.3, 0.5, 1.0, 5.0, 100.0], value=0.5, key="niid_alpha",
+    )
+    n_clients_niid = col2.slider("Clients", 2, 8, 5, key="niid_clients")
+    n_rounds_niid = col3.slider("FL Rounds", 1, 8, 3, key="niid_rounds")
+    use_dp_niid = col4.toggle("DP ON", value=False, key="niid_dp")
+
+    c5, c6 = st.columns(2)
+    clip_niid = c5.slider("DP Clip C", 0.1, 5.0, 1.0, step=0.1, key="niid_clip") if use_dp_niid else 1.0
+    sigma_niid = c6.slider("DP σ",     0.0, 2.0, 0.5, step=0.05, key="niid_sigma") if use_dp_niid else 0.0
+
+    if st.button("Run Non-IID Training + MIA", type="primary",
+                 use_container_width=True, key="niid_run_btn"):
+        progress_niid = st.progress(0)
+        status_niid = st.empty()
+        try:
+            set_seed()
+            dev = torch.device("cpu")
+
+            with st.spinner("Loading AG News..."):
+                clients_niid, test_ds_niid, vs_n, nc_n, _ = (
+                    build_ag_news_clients_noniid(
+                        num_clients=n_clients_niid, alpha=alpha_niid,
+                        use_external_csv=True, seed=42,
+                    )
+                )
+
+            # Per-client class distribution visualisation
+            st.subheader("Per-client class distribution (lower α → more skew)")
+            dist_rows = []
+            for i, c in enumerate(clients_niid):
+                dist = client_class_distribution(c, nc_n)
+                for cls_id, cnt in enumerate(dist):
+                    dist_rows.append({
+                        "Client": f"Client {i}",
+                        "Class": ["World", "Sports", "Business", "Tech"][cls_id]
+                                 if cls_id < 4 else str(cls_id),
+                        "Count": int(cnt),
+                    })
+            df_dist = pd.DataFrame(dist_rows)
+            fig_dist = px.bar(
+                df_dist, x="Client", y="Count", color="Class",
+                barmode="stack",
+                title=f"Client class distributions (Dirichlet α={alpha_niid})",
+                color_discrete_sequence=px.colors.qualitative.Set2,
+            )
+            fig_dist.update_layout(height=320, margin=dict(t=40, b=20))
+            st.plotly_chart(fig_dist, use_container_width=True)
+
+            # Train
+            kw = dict(vocab_size=vs_n, embed_dim=64, num_classes=nc_n,
+                      num_experts=8, expert_hidden_dim=256, k=2, lora_r=8)
+            srv = FedServer(MoETextClassifier(**kw), device=dev)
+
+            acc_rows = []
+            for rnd in range(1, n_rounds_niid + 1):
+                states = []
+                for ci, cds in enumerate(clients_niid):
+                    cm = MoETextClassifier(**kw)
+                    cm.load_state_dict(srv.get_global_state(), strict=False)
+                    fs, _, n, _, _, _, _ = local_train(
+                        cm, cds, 1, 64, 2e-3, dev, top_k_sparse=2)
+                    if use_dp_niid and sigma_niid > 0:
+                        fs = apply_dp(fs, clip_norm=clip_niid, noise_multiplier=sigma_niid)
+                    states.append((fs, n))
+
+                srv.aggregate(states)
+                acc = evaluate(srv.global_model, test_ds_niid, 64, dev)
+                acc_rows.append({"Round": rnd, "Accuracy": acc})
+                progress_niid.progress(rnd / n_rounds_niid)
+                status_niid.text(f"Round {rnd}/{n_rounds_niid}, acc={acc:.2%}")
+
+            progress_niid.empty()
+            status_niid.empty()
+
+            # Accuracy curve
+            df_acc = pd.DataFrame(acc_rows).set_index("Round")
+            fig_acc = px.line(df_acc, y="Accuracy",
+                              title="Test Accuracy per Round", markers=True)
+            fig_acc.update_layout(height=300, yaxis_range=[0, 1])
+            st.plotly_chart(fig_acc, use_container_width=True)
+
+            # ---- Membership Inference Attack ----
+            st.subheader("Membership Inference Attack (MIA)")
+            with st.spinner("Running MIA..."):
+                # Members = concat of first 2 clients' shards (subsample for speed)
+                from torch.utils.data import ConcatDataset
+                members = ConcatDataset(clients_niid[:2])
+                # Non-members = held-out test set
+                mia_result = membership_inference_attack(
+                    srv.global_model, members, test_ds_niid,
+                    device=dev, max_samples=400,
+                )
+
+            mia_cols = st.columns(4)
+            mia_cols[0].metric("MIA AUC", f"{mia_result.auc:.3f}",
+                               help="0.5 = random guessing (DP works), 1.0 = perfect leakage")
+            mia_cols[1].metric("Attack Accuracy", f"{mia_result.attack_accuracy:.1%}")
+            mia_cols[2].metric("Member loss (mean)", f"{mia_result.train_loss_mean:.3f}")
+            mia_cols[3].metric("Non-member loss (mean)", f"{mia_result.nonmember_loss_mean:.3f}")
+
+            if mia_result.auc < 0.55:
+                st.success(
+                    f"✓ {mia_result.summary()}  "
+                    f"Members and non-members are statistically indistinguishable."
+                )
+            elif mia_result.auc < 0.65:
+                insight_box(
+                    f"{mia_result.summary()}  Defense is weak — "
+                    "increase σ or train for more rounds."
+                )
+            else:
+                st.error(
+                    f"⚠ {mia_result.summary()}  "
+                    "Significant privacy leakage detected."
+                )
+
+            st.caption(
+                "Run this with DP OFF then DP ON to see the AUC drop — that's DP working."
+            )
+
+        except Exception as exc:
+            progress_niid.empty()
+            status_niid.empty()
+            st.error(f"Non-IID / MIA run failed: {exc}")
+            raise
+
+
+# ---------------------------------------------------------------
+# PAGE: BIDDING & ORACLE  (F3 + F4)
+# ---------------------------------------------------------------
+elif page == "Bidding & Oracle":
+    page_banner(
+        "Resource Bidding & Verifiable Oracle Committee",
+        "Pedersen-style commitments hide bids until reveal · M-oracle median voting "
+        "withstands up to ⌊(M-1)/2⌋ malicious oracles",
+        "🔐",
+    )
+    flow_bar(
+        ["Client commits bid", "Server collects", "Reveal", "Verify", "Auction"],
+        "Server collects",
+    )
+
+    concept_card(
+        "Why commit-then-reveal?",
+        "If clients revealed resource bids directly, a malicious last bidder could see all "
+        "earlier offers and undercut. Commit-reveal forces every client to lock in their bid "
+        "(via a hash) BEFORE seeing anyone else, then prove they didn't change it. The hash is "
+        "binding (can't change) and hiding (server can't reverse it without the nonce)."
+    )
+    concept_card(
+        "Why a committee of oracles?",
+        "A single oracle scoring updates is a single point of trust. With M oracles voting "
+        "independently and the median taken, up to ⌊(M-1)/2⌋ of them can be malicious or "
+        "wrong without changing the decision (the median is unaffected by outliers)."
+    )
+
+    st.subheader("Step 1 — Configure")
+    cfg1, cfg2, cfg3 = st.columns(3)
+    n_clients_bid = cfg1.slider("Number of clients", 2, 10, 5, key="bid_clients")
+    n_oracles    = cfg2.slider("Oracle committee size (M)", 1, 9, 5, step=2, key="bid_oracles")
+    top_n        = cfg3.slider("Auction winners (top-N)", 1, n_clients_bid,
+                                min(3, n_clients_bid), key="bid_topn")
+
+    if st.button("Run Bidding + Committee Round", type="primary",
+                 use_container_width=True, key="bid_run"):
+        try:
+            import random as _rand
+            _rand.seed(42)
+
+            st.subheader("Step 2 — Clients submit commitments")
+            commitments = {}
+            revealed = {}
+            for ci in range(n_clients_bid):
+                # Random plausible offer
+                bw = round(_rand.uniform(10, 200), 1)
+                cp = round(_rand.uniform(50, 500), 1)
+                sg = round(_rand.uniform(256, 4096), 0)
+                bid = ResourceBid(client_id=ci, bandwidth_mbps=bw,
+                                  compute_gflops=cp, storage_mb=sg,
+                                  nonce=fresh_nonce())
+                com = commit_bid(bid, round_id=1)
+                commitments[ci] = com
+                revealed[ci]    = bid
+
+            commit_rows = [
+                {"Client": cid,
+                 "Commitment hash": com.commitment_hash[:24] + "...",
+                 "Round": com.round_id}
+                for cid, com in commitments.items()
+            ]
+            st.dataframe(pd.DataFrame(commit_rows),
+                         hide_index=True, use_container_width=True)
+            st.caption("Server sees only the hashes at this point — bids are still hidden.")
+
+            st.subheader("Step 3 — Clients reveal bids; server verifies")
+            verify_rows = []
+            for cid, bid in revealed.items():
+                ok, why = verify_bid(commitments[cid], bid)
+                verify_rows.append({
+                    "Client": cid,
+                    "Bandwidth (Mbps)": bid.bandwidth_mbps,
+                    "Compute (GFLOPS)": bid.compute_gflops,
+                    "Storage (MB)": bid.storage_mb,
+                    "Verified": "✓" if ok else "✗",
+                    "Reason": why,
+                })
+            st.dataframe(pd.DataFrame(verify_rows),
+                         hide_index=True, use_container_width=True)
+
+            # Show what tampering looks like
+            tampered = ResourceBid(client_id=0, bandwidth_mbps=9999.0,
+                                   compute_gflops=9999.0, storage_mb=9999.0,
+                                   nonce=revealed[0].nonce)
+            ok_t, why_t = verify_bid(commitments[0], tampered)
+            insight_box(
+                f"Tamper check: a fabricated bid for Client 0 with absurd values "
+                f"is detected: ok={ok_t}, reason={why_t}"
+            )
+
+            st.subheader(f"Step 4 — Auction (top {top_n} wins)")
+            result = run_auction(commitments, revealed, top_n=top_n)
+            lb_rows = [
+                {"Rank": rank + 1, "Client": cid, "Score": f"{score:.2f}",
+                 "Won": "★" if cid in result.accepted_client_ids else ""}
+                for rank, (cid, score) in enumerate(result.leaderboard)
+            ]
+            st.dataframe(pd.DataFrame(lb_rows),
+                         hide_index=True, use_container_width=True)
+            st.success(
+                f"Winners: {result.accepted_client_ids}  |  "
+                f"Top score: {result.winning_score:.2f}  |  "
+                f"Rejected: {result.rejected_count}"
+            )
+
+            st.divider()
+            st.subheader(f"Step 5 — Oracle committee scoring (M={n_oracles})")
+            st.caption("Each oracle scores each winning client's hypothetical update independently. "
+                       "Final decision = median across the committee.")
+
+            # Hypothetical update states for each winner
+            import torch as _t
+            committee_rows = []
+            for cid in result.accepted_client_ids:
+                fake_state = {f"layer_{cid}": _t.randn(8) * 0.1}
+                attestation = committee_decision(
+                    num_oracles=n_oracles, client_id=cid, round_id=1,
+                    sparse_state=fake_state, expected_k=2,
+                )
+                for v in attestation.votes:
+                    committee_rows.append({
+                        "Client": cid,
+                        "Oracle": v.oracle_id,
+                        "Score": round(v.score, 3),
+                        "Vote hash": v.vote_hash,
+                        "Rationale": v.rationale[:60] + "...",
+                    })
+                committee_rows.append({
+                    "Client": cid,
+                    "Oracle": "MEDIAN",
+                    "Score": round(attestation.median_score, 3),
+                    "Vote hash": "—",
+                    "Rationale": ("ACCEPTED" if attestation.accepted
+                                  else "REJECTED") + " by committee",
+                })
+            st.dataframe(pd.DataFrame(committee_rows),
+                         hide_index=True, use_container_width=True)
+
+        except Exception as exc:
+            st.error(f"Bidding/Oracle round failed: {exc}")
+            raise
+
+
+# ---------------------------------------------------------------
+# PAGE: CHAIN EXPLORER  (F9)
+# ---------------------------------------------------------------
+elif page == "Chain Explorer":
+    page_banner(
+        "Hash-Chained Ledger Explorer",
+        "Append-only, tamper-evident audit trail of all FL events · "
+        "Merkle roots + per-block hashes · pure Python (no Ethereum)",
+        "🔗",
+    )
+    flow_bar(
+        ["Add transactions", "Seal block", "Verify chain", "Tamper test"],
+        "Verify chain",
+    )
+
+    concept_card(
+        "Why a ledger?",
+        "An append-only ledger gives every participant a verifiable audit trail of FL events: "
+        "who registered, who bid what, which proofs passed/failed, how reputation evolved. "
+        "Tampering with any past block would change the merkle root, which breaks the chain "
+        "of block hashes, which is detectable by anyone."
+    )
+    concept_card(
+        "What about Ethereum?",
+        "Real ZK + reputation systems often deploy to Ethereum L2s (Polygon zkEVM, StarkNet) "
+        "for trustless verification at the cost of gas. Our Python ledger has the same "
+        "structural integrity properties (Merkle tree + hash chain) without the deployment cost, "
+        "making it perfect for a B.Tech demonstration."
+    )
+
+    if "ledger" not in st.session_state:
+        st.session_state["ledger"] = Ledger()
+
+    ledger: Ledger = st.session_state["ledger"]
+
+    cols = st.columns(4)
+    cols[0].metric("Chain height", ledger.height(),
+                   help="Number of blocks (incl. genesis)")
+    cols[1].metric("Total transactions", ledger.total_transactions())
+    cols[2].metric("Latest block hash", ledger.latest_block().block_hash[:12] + "...")
+    cols[3].metric("Mempool size", len(ledger._mempool))
+
+    st.divider()
+    st.subheader("Add transactions to the mempool")
+    bcol1, bcol2, bcol3, bcol4 = st.columns(4)
+    if bcol1.button("+ Register Client"):
+        cid = _rand_client_id()
+        ledger.add_transaction("register", client_id=cid,
+                               did=f"did:zkfedmoe:client{cid}")
+        st.toast(f"Registered Client {cid}")
+    if bcol2.button("+ Bid Commit"):
+        ledger.add_transaction("bid_commit",
+                               client_id=_rand_client_id(),
+                               hash=fresh_nonce(8),
+                               round=1)
+        st.toast("Bid commitment added")
+    if bcol3.button("+ SEPG Verify"):
+        cid = _rand_client_id()
+        ledger.add_transaction("verify", client_id=cid, round=1, accepted=True,
+                               proof_hash=fresh_nonce(8))
+        st.toast(f"Proof verification for Client {cid}")
+    if bcol4.button("+ Reputation"):
+        cid = _rand_client_id()
+        import random as _r
+        ledger.add_transaction("reputation", client_id=cid,
+                               score=round(_r.uniform(0.4, 1.0), 3))
+        st.toast(f"Reputation updated for Client {cid}")
+
+    s1, s2 = st.columns(2)
+    if s1.button("📦 Seal block (commit mempool)", type="primary",
+                 use_container_width=True):
+        if ledger._mempool:
+            b = ledger.seal_block()
+            st.success(f"Block {b.block_id} sealed with {len(b.tx_list)} transactions")
+        else:
+            st.warning("Mempool is empty — add some transactions first.")
+
+    if s2.button("🔁 Reset chain", use_container_width=True):
+        st.session_state["ledger"] = Ledger()
+        st.rerun()
+
+    st.divider()
+    st.subheader("Chain blocks")
+    summary = ledger.to_summary()
+    if summary:
+        df_blocks = pd.DataFrame(summary)
+        st.dataframe(df_blocks, hide_index=True, use_container_width=True)
+
+    st.subheader("Verify chain integrity")
+    verify_col1, verify_col2 = st.columns([1, 3])
+    if verify_col1.button("Verify now"):
+        ok, why = ledger.verify()
+        if ok:
+            verify_col2.success(f"✓ Chain integrity holds: {why}")
+        else:
+            verify_col2.error(f"✗ Chain corrupt: {why}")
+
+    if verify_col1.button("🔥 Tamper test"):
+        if ledger.height() < 2:
+            verify_col2.warning("Need at least one sealed block to tamper with.")
+        else:
+            # Mutate a payload field of a transaction in block 1
+            try:
+                tgt = ledger.blocks[1].tx_list[0]
+                old = tgt.payload.copy()
+                tgt.payload["tampered"] = "yes_a_bad_actor"
+                ok, why = ledger.verify()
+                # Restore so the chain becomes valid again next click
+                tgt.payload = old
+                if not ok:
+                    verify_col2.error(
+                        f"✓ Tamper detected (and reverted): {why}. "
+                        "This shows the merkle root + block hash catch any modification."
+                    )
+                else:
+                    verify_col2.warning("Tampering didn't break chain — unexpected.")
+            except IndexError:
+                verify_col2.warning("Block 1 has no transactions to tamper with.")
 
 
 # ---------------------------------------------------------------

@@ -8,13 +8,48 @@ Major Project | Group #34 | IIIT Kota | April 2026
 
 ## Overview
 
-zkFedMoE is a federated learning framework that solves three unsolved challenges simultaneously:
+**The core idea:** Every client trains the model locally on its own private data (never shared). After training, each client sends only its model updates to a central server. The server averages all clients' updates into a single global model, then broadcasts it back. This repeats every round. No raw data ever leaves the client device.
+
+zkFedMoE extends this federated learning paradigm to solve three unsolved challenges simultaneously:
 
 1. **Privacy leakage** — through Differential Privacy (DP-SGD) with formal (ε, δ)-guarantees
 2. **Unverifiable updates** — through Selective Expert Proof Generation (SEPG) with SHA-256 integrity
 3. **Communication cost** — through sparse Top-K expert updates in Mixture-of-Experts (MoE) models
 
 By exploiting MoE sparsity, both communication cost and verification overhead reduce from **O(N) to O(K)** where K ≪ N.
+
+---
+
+## How It Works (Per Federated Round)
+
+```
+  ┌──────────┐   1. Download global model (θ_t)    ┌──────────┐
+  │          │ ◄──────────────────────────────────  │          │
+  │  CLIENT  │                                      │  SERVER  │
+  │   (N)    │   2. Train locally on private D_i    │          │
+  │          │      (data NEVER leaves the client)  │          │
+  │          │                                      │          │
+  │          │   3. Select Top-K experts            │          │
+  │          │      Apply DP-SGD (clip + noise)     │          │
+  │          │      Generate SEPG proof π_i         │          │
+  │          │                                      │          │
+  │          │   4. Upload (sparse update + π_i)    │          │
+  │          │ ─────────────────────────────────►   │          │
+  │          │                                      │          │
+  │          │                                      │  5. Verify proofs  │
+  │          │                                      │  6. Aggregate      │
+  │          │                                      │     (FedAvg /      │
+  │          │                                      │      Median /      │
+  │          │                                      │      TrimMean)     │
+  │          │                                      │  7. Update θ_{t+1} │
+  │          │                                      │                    │
+  │          │   8. Broadcast new θ_{t+1}           │                    │
+  │          │ ◄────────────────────────────────    │                    │
+  └──────────┘                                      └──────────┘
+                  REPEAT EACH ROUND
+```
+
+**Key point:** Only gradients/parameters travel over the network — never the raw training data. The server sees model updates, not user data.
 
 ---
 

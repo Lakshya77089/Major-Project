@@ -1,10 +1,11 @@
-from typing import List, Tuple
+from typing import List, Tuple, Union
 import csv
 import os
 from pathlib import Path
 
+import numpy as np
 import torch
-from torch.utils.data import Dataset, random_split
+from torch.utils.data import Dataset, Subset, random_split
 
 
 class TextClassificationDataset(Dataset):
@@ -174,6 +175,142 @@ def build_ag_news_clients(
     clients = [c for c in clients if len(c) >= min_per_client]
 
     num_classes = max(labels_train or [0]) + 1 if use_external_csv and train_csv.exists() else 4
+    return clients, test_dataset, len(vocab), num_classes, vocab
+
+
+# ============================================================================
+# Non-IID partitioning via Dirichlet distribution
+# ============================================================================
+# Real federated learning almost never has IID data across clients.  The
+# standard simulation method (Yurochkin et al. 2019; Hsu et al. 2019) is to
+# draw each class's per-client proportions from a Dirichlet(alpha) distribution:
+#
+#     alpha -> 0    : extreme non-IID (each client sees only 1 or 2 classes)
+#     alpha = 0.5   : realistic non-IID for FL benchmarks
+#     alpha = 1.0   : moderate skew
+#     alpha -> inf  : approaches IID (all clients see all classes equally)
+
+
+def _dataset_labels(dataset: Dataset) -> np.ndarray:
+    """Extract all labels from a dataset, handling Subset indirection."""
+    if isinstance(dataset, Subset):
+        # Prefer the underlying indices + labels (avoids loading input_ids)
+        base = dataset.dataset
+        if hasattr(base, "labels"):
+            return np.asarray([base.labels[i] for i in dataset.indices])
+        return np.asarray([int(dataset[i][1]) for i in range(len(dataset))])
+    if hasattr(dataset, "labels"):
+        return np.asarray(dataset.labels)
+    return np.asarray([int(dataset[i][1]) for i in range(len(dataset))])
+
+
+def dirichlet_split(
+    dataset: Dataset,
+    num_clients: int,
+    alpha: float = 0.5,
+    min_size: int = 20,
+    seed: int = 42,
+) -> List[Subset]:
+    """
+    Split ``dataset`` into ``num_clients`` non-IID shards using a Dirichlet
+    distribution on class proportions.
+
+    Args:
+        dataset: a labelled Dataset (must expose labels via .labels or __getitem__)
+        num_clients: number of client shards to produce
+        alpha: Dirichlet concentration.  Small -> very non-IID.
+        min_size: re-sample the Dirichlet if any client would have fewer than
+                  this many samples (avoids empty/near-empty clients)
+        seed: RNG seed for reproducibility
+
+    Returns:
+        List of Subsets, one per client.
+    """
+    rng = np.random.default_rng(seed)
+    labels = _dataset_labels(dataset)
+    n_classes = int(labels.max()) + 1
+    n = len(labels)
+
+    # Group sample indices by class
+    class_indices = [np.where(labels == c)[0] for c in range(n_classes)]
+    for idxs in class_indices:
+        rng.shuffle(idxs)
+
+    # Re-sample Dirichlet until no client is tiny
+    for attempt in range(20):
+        client_indices: List[List[int]] = [[] for _ in range(num_clients)]
+        for c in range(n_classes):
+            proportions = rng.dirichlet([alpha] * num_clients)
+            # Split class-c indices according to these proportions
+            split_points = (np.cumsum(proportions) * len(class_indices[c])).astype(int)[:-1]
+            parts = np.split(class_indices[c], split_points)
+            for client_id, part in enumerate(parts):
+                client_indices[client_id].extend(part.tolist())
+        sizes = [len(ids) for ids in client_indices]
+        if min(sizes) >= min_size:
+            break
+
+    # Shuffle each client's index list so batches are not class-grouped
+    for ids in client_indices:
+        rng.shuffle(ids)
+
+    return [Subset(dataset, ids) for ids in client_indices]
+
+
+def client_class_distribution(dataset: Dataset, num_classes: int) -> np.ndarray:
+    """Return an (num_classes,) array of class counts for the given shard."""
+    labels = _dataset_labels(dataset)
+    counts = np.zeros(num_classes, dtype=int)
+    for c in range(num_classes):
+        counts[c] = int((labels == c).sum())
+    return counts
+
+
+def build_ag_news_clients_noniid(
+    num_clients: int = 5,
+    alpha: float = 0.5,
+    seq_len: int = 64,
+    max_vocab: int = 5000,
+    use_external_csv: bool = True,
+    seed: int = 42,
+    min_per_client: int = 20,
+) -> Tuple[List[Dataset], Dataset, int, int, dict]:
+    """
+    Same return signature as build_ag_news_clients, but partitions the training
+    set using Dirichlet(alpha) instead of IID random_split.
+
+    Lower alpha = more heterogeneous data across clients.
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    data_dir = project_root / "data"
+    train_csv = data_dir / "ag_news_train.csv"
+    test_csv = data_dir / "ag_news_test.csv"
+
+    if use_external_csv and train_csv.exists() and test_csv.exists():
+        texts_train, labels_train, texts_test, labels_test = _load_csv_corpus(train_csv, test_csv)
+        from collections import Counter
+        token_counts: Counter = Counter()
+        for text in texts_train:
+            token_counts.update(text.lower().split())
+        vocab = {"<pad>": 0}
+        for tok, _ in token_counts.most_common(max_vocab - 1):
+            vocab[tok] = len(vocab)
+        train_dataset = TextClassificationDataset(texts_train, labels_train, vocab, seq_len=seq_len)
+        test_dataset = TextClassificationDataset(texts_test, labels_test, vocab, seq_len=seq_len)
+        num_classes = max(labels_train) + 1 if labels_train else 4
+    else:
+        texts, labels, vocab = _build_small_corpus(repeat=50)
+        full_dataset = TextClassificationDataset(texts, labels, vocab, seq_len=seq_len)
+        n_total = len(full_dataset)
+        n_test = max(n_total // 5, 1)
+        n_train = n_total - n_test
+        train_dataset, test_dataset = random_split(full_dataset, [n_train, n_test])
+        num_classes = 4
+
+    clients = dirichlet_split(
+        train_dataset, num_clients=num_clients,
+        alpha=alpha, min_size=min_per_client, seed=seed,
+    )
     return clients, test_dataset, len(vocab), num_classes, vocab
 
 

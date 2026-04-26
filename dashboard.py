@@ -6,6 +6,7 @@ Launch:  python -m streamlit run dashboard.py
 
 import io
 import json
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import torch
-from torch.utils.data import ConcatDataset, DataLoader, random_split
+from torch.utils.data import ConcatDataset, DataLoader, Subset, random_split
 
 from src.data.text_datasets import (
     TextClassificationDataset,
@@ -40,6 +41,7 @@ from src.fl.server import FedServer
 from src.fl.zkhash import benchmark_compare as zkhash_benchmark
 from src.chain.ledger import Ledger
 from src.models.moe_model import MoETextClassifier, predict_with_routing
+from src.viz.animations import predict_animation_frame, fl_topology_frame
 
 # ---------------------------------------------------------------
 # Config
@@ -137,6 +139,26 @@ html, body, [class*="css"] { font-family: 'Segoe UI', sans-serif; }
     border-radius: 10px;
     padding: 12px 16px;
 }
+/* Force dark text on the light metric card so values stay readable
+   regardless of Streamlit's light/dark theme. */
+[data-testid="stMetric"] *,
+[data-testid="stMetric"] label,
+[data-testid="stMetricLabel"],
+[data-testid="stMetricLabel"] p,
+[data-testid="stMetricValue"],
+[data-testid="stMetricValue"] div {
+    color: #1f2937 !important;
+}
+[data-testid="stMetricLabel"] {
+    font-weight: 600;
+    opacity: 0.85;
+}
+/* Delta: keep semantic green/red but readable on light bg */
+[data-testid="stMetricDelta"] svg { fill: currentColor; }
+[data-testid="stMetricDelta"][class*="positive"],
+[data-testid="stMetricDelta"][class*="positive"] * { color: #16a34a !important; }
+[data-testid="stMetricDelta"][class*="negative"],
+[data-testid="stMetricDelta"][class*="negative"] * { color: #dc2626 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -227,18 +249,29 @@ def load_ag_news(num_clients: int):
 def _build_quickstart_model():
     set_seed()
     dev = torch.device("cpu")
-    cl, td, vs, nc, voc = build_ag_news_clients(
-        num_clients=4, seq_len=64, use_external_csv=False, repeat=50)
+    clients_1, _td, vs, nc, voc = _load_ag_news_raw()
+    full_train = clients_1[0]
+
+    SUBSAMPLE = 32_000
+    if len(full_train) > SUBSAMPLE:
+        idxs = torch.randperm(len(full_train))[:SUBSAMPLE].tolist()
+        full_train = Subset(full_train, idxs)
+
+    n = len(full_train)
+    sizes = [n // 4] * 4
+    sizes[0] += n - sum(sizes)
+    cl = list(random_split(full_train, sizes))
+
     kw = dict(vocab_size=vs, embed_dim=64, num_classes=nc,
               num_experts=4, expert_hidden_dim=128, k=2, lora_r=8)
     srv = FedServer(MoETextClassifier(**kw), device=dev)
-    for _ in range(8):
+    for _ in range(10):
         sts = []
         for c in cl:
             m = MoETextClassifier(**kw)
             m.load_state_dict(srv.get_global_state(), strict=False)
-            fs, _, n, _, _, _, _ = local_train(m, c, 2, 16, 5e-4, dev)
-            sts.append((fs, n))
+            fs, _, _n, _, _, _, _ = local_train(m, c, 2, 64, 1e-3, dev)
+            sts.append((fs, _n))
         srv.aggregate(sts)
     return srv.global_model, voc, kw
 
@@ -249,8 +282,10 @@ def _build_quickstart_model():
 st.sidebar.title("zkFedMoE")
 page = st.sidebar.radio(
     "Navigate",
-    ["🏠 Home", "Predict", "Train", "Custom CSV", "Privacy & DP", "Robustness",
-     "Non-IID & MIA", "Bidding & Oracle", "Chain Explorer",
+    ["🏠 Home", "Predict", "Train", "Custom CSV",
+     "Hospital FL Demo", "Disease Predict",
+     "Privacy & DP", "Robustness", "Non-IID & MIA",
+     "Bidding & Oracle", "Chain Explorer",
      "Experiments", "Compare", "Architecture", "About"],
 )
 st.sidebar.divider()
@@ -462,6 +497,24 @@ elif page == "Predict":
 
         oov = [t for t in text.lower().split() if t not in vocab]
 
+        # ---- Live inference animation (5 stages) ----
+        anim_box = st.empty()
+        for _stage in range(6):
+            anim_box.plotly_chart(
+                predict_animation_frame(
+                    stage=_stage,
+                    tokens=text.lower().split(),
+                    oov=oov,
+                    num_experts=num_exp,
+                    top_experts=top_experts,
+                    pred_label=pred_label,
+                    class_probs=class_probs,
+                ),
+                use_container_width=True,
+                key=f"predict_anim_{_stage}",
+            )
+            time.sleep(0.45)
+
         c1, c2 = st.columns([1, 2])
         with c1:
             st.metric("Predicted Class", pred_label,
@@ -672,6 +725,9 @@ elif page == "Train":
             if use_sepg:
                 sepg_status = st.empty()
 
+            st.markdown("**Federated Round Animation**")
+            fl_anim = st.empty()
+
             metric_cols = st.columns(4)
             m_dense  = metric_cols[0].empty()
             m_sparse = metric_cols[1].empty()
@@ -694,7 +750,22 @@ elif page == "Train":
                 usage_matrix = []
                 proofs = []
 
+                # Phase 1: server broadcasts global model
+                fl_anim.plotly_chart(
+                    fl_topology_frame(num_clients, "broadcast", rnd, num_rounds, da if rnd > 1 else None),
+                    use_container_width=True,
+                    key=f"fl_anim_{rnd}_broadcast",
+                )
+                time.sleep(0.45)
+
                 for ci, cds in enumerate(cl):
+                    # Phase 2: client ci trains locally
+                    fl_anim.plotly_chart(
+                        fl_topology_frame(num_clients, "train", rnd, num_rounds,
+                                          da if rnd > 1 else None, active_client=ci),
+                        use_container_width=True,
+                        key=f"fl_anim_{rnd}_train_{ci}",
+                    )
                     cm = MoETextClassifier(**kw)
                     cm.load_state_dict(srv_d.get_global_state(), strict=False)
                     fs, sp, n, db, sb, tki, eu = local_train(
@@ -726,6 +797,22 @@ elif page == "Train":
                             sparse_state=sp,
                         )
                         proofs.append((proof, sp))
+
+                # Phase 3: clients upload sparse gradients + proofs
+                fl_anim.plotly_chart(
+                    fl_topology_frame(num_clients, "upload", rnd, num_rounds, da if rnd > 1 else None),
+                    use_container_width=True,
+                    key=f"fl_anim_{rnd}_upload",
+                )
+                time.sleep(0.45)
+
+                # Phase 4: server aggregates
+                fl_anim.plotly_chart(
+                    fl_topology_frame(num_clients, "aggregate", rnd, num_rounds, da if rnd > 1 else None),
+                    use_container_width=True,
+                    key=f"fl_anim_{rnd}_aggregate",
+                )
+                time.sleep(0.4)
 
                 srv_d.aggregate(ds_)
                 srv_s.aggregate(ss_)
@@ -793,6 +880,13 @@ elif page == "Train":
                                   labels={"value": "KB", "variable": "Mode"})
                 fig_comm.update_layout(height=300)
                 comm_chart.plotly_chart(fig_comm, use_container_width=True)
+
+            # Final "done" frame
+            fl_anim.plotly_chart(
+                fl_topology_frame(num_clients, "done", num_rounds, num_rounds, da),
+                use_container_width=True,
+                key="fl_anim_done",
+            )
 
             progress.empty()
             status_text.empty()
@@ -2281,6 +2375,1200 @@ You can override both in Step 2.
 **Minimum requirements:** 2 columns, ≥ 20 rows per class, ≤ 20 distinct labels.
             """
         )
+
+
+# ---------------------------------------------------------------
+# PAGE: HOSPITAL FL DEMO
+# ---------------------------------------------------------------
+elif page == "Hospital FL Demo":
+    page_banner(
+        "Hospital Federated Learning Demo",
+        "Real public hospital dataset · multiple hospitals (edge clients) · "
+        "no raw data shared · only model updates flow",
+        "🏥",
+    )
+    flow_bar(
+        ["Load global data", "Split across hospitals (non-IID)",
+         "Local train", "Upload updates", "FedAvg aggregate", "Repeat"],
+        "Local train",
+    )
+
+    concept_card(
+        "What this demo proves",
+        "Yeh real-world FL scenario hai: multiple hospitals private patient data rakhte hain, "
+        "data share nahi kar sakte (HIPAA/GDPR). Har hospital sirf apna locally train karta hai aur "
+        "MODEL UPDATES (weights ka delta) bhejta hai. Server FedAvg karke saare updates merge karta hai. "
+        "Raw patient records kabhi server tak nahi pahunchte — yeh privacy contract hai."
+    )
+    concept_card(
+        "Default dataset",
+        "Pima Indians Diabetes (UCI ML Repository, public domain). 768 patient records, 8 medical "
+        "features (Glucose, BloodPressure, BMI, Insulin, Age, etc.) and a binary outcome (diabetic / "
+        "non-diabetic). Tum apna CSV bhi upload kar sakte ho — last column = label, baki = features."
+    )
+
+    # ---- Dataset selection ----
+    st.subheader("1. Choose dataset")
+    src_col1, src_col2 = st.columns([1, 2])
+    src_choice = src_col1.radio(
+        "Source", ["Pima Diabetes (default)", "Upload custom hospital CSV"],
+        key="hosp_source",
+    )
+    uploaded_csv_data = None
+    if src_choice == "Upload custom hospital CSV":
+        uploaded_csv_data = src_col2.file_uploader(
+            "CSV file (last column = label, all preceding = numeric features)",
+            type=["csv"], key="hosp_csv",
+        )
+
+    # ---- Configuration ----
+    st.subheader("2. Configure federation")
+    cfg1, cfg2, cfg3, cfg4 = st.columns(4)
+    n_hospitals = cfg1.slider("Hospitals (clients)", 2, 10, 5, key="hosp_n")
+    n_rounds_h  = cfg2.slider("FL rounds", 1, 20, 6, key="hosp_rounds")
+    alpha_h     = cfg3.select_slider(
+        "Dirichlet α (heterogeneity)",
+        options=[0.1, 0.3, 0.5, 1.0, 5.0, 100.0], value=0.5, key="hosp_alpha",
+    )
+    local_epochs_h = cfg4.slider("Local epochs / round", 1, 5, 2, key="hosp_epochs")
+
+    cfg5, cfg6 = st.columns(2)
+    lr_h    = cfg5.select_slider(
+        "Learning rate", options=[1e-4, 5e-4, 1e-3, 2e-3, 5e-3], value=1e-3, key="hosp_lr",
+    )
+    batch_h = cfg6.slider("Batch size", 4, 64, 16, step=4, key="hosp_batch")
+
+    st.caption(
+        "α small = realistic non-IID (each hospital sees skewed patient mix). "
+        "α large = nearly IID (all hospitals see balanced classes)."
+    )
+
+    if st.button("🏥 Run Hospital Federated Training",
+                 type="primary", use_container_width=True, key="hosp_run"):
+        progress_h = st.progress(0.0)
+        status_h = st.empty()
+        try:
+            import urllib.request as _urlreq
+            from torch.utils.data import TensorDataset, DataLoader, Subset
+
+            set_seed(42)
+            np.random.seed(42)
+
+            # ---- Load data ----
+            with st.spinner("Loading dataset..."):
+                if uploaded_csv_data is not None:
+                    raw_bytes = uploaded_csv_data.read()
+                    text_csv = raw_bytes.decode("utf-8", errors="replace")
+                else:
+                    cache_path = Path(__file__).parent / "data" / "pima_diabetes.csv"
+                    if cache_path.exists():
+                        text_csv = cache_path.read_text()
+                    else:
+                        url_pima = (
+                            "https://raw.githubusercontent.com/jbrownlee/Datasets/"
+                            "master/pima-indians-diabetes.data.csv"
+                        )
+                        try:
+                            with _urlreq.urlopen(url_pima, timeout=10) as r:
+                                text_csv = r.read().decode("utf-8")
+                            cache_path.parent.mkdir(parents=True, exist_ok=True)
+                            cache_path.write_text(text_csv)
+                        except Exception as e:
+                            st.warning(
+                                f"Couldn't download Pima dataset ({e}); using a small "
+                                "32-row offline fallback so the demo still runs."
+                            )
+                            text_csv = (
+                                "6,148,72,35,0,33.6,0.627,50,1\n"
+                                "1,85,66,29,0,26.6,0.351,31,0\n"
+                                "8,183,64,0,0,23.3,0.672,32,1\n"
+                                "1,89,66,23,94,28.1,0.167,21,0\n"
+                                "0,137,40,35,168,43.1,2.288,33,1\n"
+                                "5,116,74,0,0,25.6,0.201,30,0\n"
+                                "3,78,50,32,88,31.0,0.248,26,1\n"
+                                "10,115,0,0,0,35.3,0.134,29,0\n"
+                                "2,197,70,45,543,30.5,0.158,53,1\n"
+                                "8,125,96,0,0,0.0,0.232,54,1\n"
+                                "4,110,92,0,0,37.6,0.191,30,0\n"
+                                "10,168,74,0,0,38.0,0.537,34,1\n"
+                                "10,139,80,0,0,27.1,1.441,57,0\n"
+                                "1,189,60,23,846,30.1,0.398,59,1\n"
+                                "5,166,72,19,175,25.8,0.587,51,1\n"
+                                "7,100,0,0,0,30.0,0.484,32,1\n"
+                                "0,118,84,47,230,45.8,0.551,31,1\n"
+                                "7,107,74,0,0,29.6,0.254,31,1\n"
+                                "1,103,30,38,83,43.3,0.183,33,0\n"
+                                "1,115,70,30,96,34.6,0.529,32,1\n"
+                                "3,126,88,41,235,39.3,0.704,27,0\n"
+                                "8,99,84,0,0,35.4,0.388,50,0\n"
+                                "7,196,90,0,0,39.8,0.451,41,1\n"
+                                "9,119,80,35,0,29.0,0.263,29,1\n"
+                                "11,143,94,33,146,36.6,0.254,51,1\n"
+                                "10,125,70,26,115,31.1,0.205,41,1\n"
+                                "7,147,76,0,0,39.4,0.257,43,1\n"
+                                "1,97,66,15,140,23.2,0.487,22,0\n"
+                                "13,145,82,19,110,22.2,0.245,57,0\n"
+                                "5,117,92,0,0,34.1,0.337,38,0\n"
+                                "5,109,75,26,0,36.0,0.546,60,0\n"
+                                "3,158,76,36,245,31.6,0.851,28,1\n"
+                            )
+
+                # Parse rows -> X, y
+                rows = []
+                for line in text_csv.strip().splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split(",")
+                    try:
+                        rows.append([float(p) for p in parts])
+                    except ValueError:
+                        continue  # skip header
+                if not rows:
+                    st.error("No numeric rows parsed from the dataset.")
+                    st.stop()
+                arr = np.array(rows, dtype=np.float32)
+                X_full = arr[:, :-1]
+                y_full = arr[:, -1].astype(np.int64)
+                n_classes_h = int(y_full.max()) + 1
+
+                # Standardise features
+                mu = X_full.mean(axis=0, keepdims=True)
+                sd = X_full.std(axis=0, keepdims=True) + 1e-8
+                X_full = (X_full - mu) / sd
+
+                # Train/test split
+                n_total = X_full.shape[0]
+                n_test_h = max(int(0.2 * n_total), 8)
+                perm_h = np.random.permutation(n_total)
+                test_ix = perm_h[:n_test_h]
+                train_ix = perm_h[n_test_h:]
+
+                X_train_t = torch.from_numpy(X_full[train_ix]).float()
+                y_train_t = torch.from_numpy(y_full[train_ix]).long()
+                X_test_t  = torch.from_numpy(X_full[test_ix]).float()
+                y_test_t  = torch.from_numpy(y_full[test_ix]).long()
+
+                train_ds_h = TensorDataset(X_train_t, y_train_t)
+                test_ds_h  = TensorDataset(X_test_t, y_test_t)
+
+            n_features_h = X_full.shape[1]
+            st.success(
+                f"Dataset loaded: {n_total} rows, {n_features_h} features, "
+                f"{n_classes_h} classes (split: {len(train_ix)} train / {len(test_ix)} test)."
+            )
+
+            # ---- Dirichlet split across hospitals ----
+            with st.spinner("Splitting across hospitals (Dirichlet α partitioning)..."):
+                rng_h = np.random.default_rng(42)
+                by_class_h = [np.where(y_train_t.numpy() == c)[0]
+                              for c in range(n_classes_h)]
+                for arr_c in by_class_h:
+                    rng_h.shuffle(arr_c)
+
+                client_ix_h = None
+                for _attempt in range(30):
+                    candidate = [[] for _ in range(n_hospitals)]
+                    for c in range(n_classes_h):
+                        proportions = rng_h.dirichlet([alpha_h] * n_hospitals)
+                        split_pts = (np.cumsum(proportions) *
+                                     len(by_class_h[c])).astype(int)[:-1]
+                        chunks = np.split(by_class_h[c], split_pts)
+                        for cid, chunk in enumerate(chunks):
+                            candidate[cid].extend(chunk.tolist())
+                    if min(len(ix) for ix in candidate) >= 5:
+                        client_ix_h = candidate
+                        break
+                if client_ix_h is None:
+                    client_ix_h = candidate
+
+                client_dss_h = [Subset(train_ds_h, ix) for ix in client_ix_h]
+
+            # Show per-hospital class distribution
+            st.subheader("Per-hospital class distribution")
+            dist_rows = []
+            for cid, ix in enumerate(client_ix_h):
+                yc = y_train_t.numpy()[ix]
+                for c in range(n_classes_h):
+                    dist_rows.append({
+                        "Hospital": f"Hospital {cid}",
+                        "Class":    f"Class {c}",
+                        "Count":    int((yc == c).sum()),
+                    })
+            df_dist = pd.DataFrame(dist_rows)
+            fig_dist = px.bar(
+                df_dist, x="Hospital", y="Count", color="Class",
+                barmode="stack",
+                title=f"Each hospital's patient mix (Dirichlet α={alpha_h}, "
+                      f"non-IID = each hospital sees a different distribution)",
+                color_discrete_sequence=px.colors.qualitative.Set2,
+            )
+            fig_dist.update_layout(height=320, margin=dict(t=50, b=20))
+            st.plotly_chart(fig_dist, use_container_width=True)
+            insight_box(
+                "Notice: each hospital's bar is different. Some have mostly "
+                "non-diabetic patients, others mostly diabetic. This is realistic — "
+                "real hospitals never have the same patient mix. FL must work "
+                "despite this heterogeneity."
+            )
+
+            # ---- Build small MLP for tabular medical features ----
+            class _DiabClf(torch.nn.Module):
+                def __init__(self, in_f, hidden=32, n_cls=2):
+                    super().__init__()
+                    self.net = torch.nn.Sequential(
+                        torch.nn.Linear(in_f, hidden), torch.nn.ReLU(),
+                        torch.nn.Linear(hidden, hidden), torch.nn.ReLU(),
+                        torch.nn.Linear(hidden, n_cls),
+                    )
+                def forward(self, x): return self.net(x)
+
+            global_model_h = _DiabClf(n_features_h, 32, n_classes_h)
+
+            def _eval_h(model, ds):
+                model.eval()
+                ldr = DataLoader(ds, batch_size=128, shuffle=False)
+                crit_e = torch.nn.CrossEntropyLoss(reduction="sum")
+                correct = total = 0
+                loss_sum = 0.0
+                with torch.no_grad():
+                    for X, y in ldr:
+                        out = model(X)
+                        loss_sum += crit_e(out, y).item()
+                        correct += int((out.argmax(-1) == y).sum())
+                        total += y.size(0)
+                return correct / max(total, 1), loss_sum / max(total, 1)
+
+            initial_acc_h, initial_loss_h = _eval_h(global_model_h, test_ds_h)
+            st.info(
+                f"Initial (untrained) global model accuracy: "
+                f"**{initial_acc_h:.2%}** (random baseline = "
+                f"{1.0/n_classes_h:.0%})"
+            )
+
+            # ---- FL training loop ----
+            st.subheader(f"3. Federated training ({n_rounds_h} rounds × {n_hospitals} hospitals)")
+
+            chart_col_l, chart_col_r = st.columns(2)
+            acc_chart_h = chart_col_l.empty()
+            log_table_h = chart_col_r.empty()
+            acc_history = []
+            log_rows = []
+
+            for rnd in range(1, n_rounds_h + 1):
+                global_state_h = {
+                    k: v.detach().cpu().clone()
+                    for k, v in global_model_h.state_dict().items()
+                }
+                client_updates_h = []
+                round_losses = []
+
+                for cid in range(n_hospitals):
+                    local_model = _DiabClf(n_features_h, 32, n_classes_h)
+                    local_model.load_state_dict(global_state_h)
+
+                    # Local training (raw data NEVER leaves this loop)
+                    local_model.train()
+                    loader_l = DataLoader(client_dss_h[cid],
+                                          batch_size=batch_h, shuffle=True)
+                    opt_l = torch.optim.Adam(local_model.parameters(), lr=lr_h)
+                    crit_l = torch.nn.CrossEntropyLoss()
+                    last_loss = 0.0
+                    for _ep in range(local_epochs_h):
+                        for X_b, y_b in loader_l:
+                            opt_l.zero_grad()
+                            out_l = local_model(X_b)
+                            loss_l = crit_l(out_l, y_b)
+                            loss_l.backward()
+                            opt_l.step()
+                            last_loss = loss_l.item()
+
+                    new_state = {
+                        k: v.detach().cpu().clone()
+                        for k, v in local_model.state_dict().items()
+                    }
+                    sq = 0.0
+                    for k in new_state:
+                        sq += float((new_state[k].float() -
+                                     global_state_h[k].float()).pow(2).sum().item())
+                    delta_l2 = sq ** 0.5
+
+                    log_rows.append({
+                        "Round":      rnd,
+                        "Hospital":   f"H{cid}",
+                        "Records":    len(client_ix_h[cid]),
+                        "Local loss": round(last_loss, 4),
+                        "delta_L2":   round(delta_l2, 4),
+                    })
+                    client_updates_h.append((new_state, len(client_ix_h[cid])))
+                    round_losses.append(last_loss)
+
+                # Server FedAvg
+                total_n = sum(n for _, n in client_updates_h)
+                agg_state = {
+                    k: torch.zeros_like(client_updates_h[0][0][k]).float()
+                    for k in client_updates_h[0][0]
+                }
+                for state, n in client_updates_h:
+                    w = n / total_n
+                    for k in agg_state:
+                        agg_state[k] += state[k].float() * w
+                global_model_h.load_state_dict(agg_state)
+
+                # Evaluate
+                acc_h, loss_h = _eval_h(global_model_h, test_ds_h)
+                acc_history.append({
+                    "Round":          rnd,
+                    "Test acc":       acc_h,
+                    "Test loss":      loss_h,
+                    "Avg local loss": float(np.mean(round_losses)),
+                })
+
+                # Refresh UI
+                progress_h.progress(rnd / n_rounds_h)
+                status_h.markdown(
+                    f"**Round {rnd}/{n_rounds_h}** — global accuracy: "
+                    f"**{acc_h:.2%}**, test loss: {loss_h:.4f}"
+                )
+
+                df_acc_h = pd.DataFrame(acc_history)
+                fig_acc_h = go.Figure()
+                fig_acc_h.add_trace(go.Scatter(
+                    x=df_acc_h["Round"], y=df_acc_h["Test acc"],
+                    mode="lines+markers", name="Test accuracy",
+                    line=dict(color="#4C72B0", width=3),
+                ))
+                fig_acc_h.add_trace(go.Scatter(
+                    x=df_acc_h["Round"], y=df_acc_h["Avg local loss"],
+                    mode="lines+markers", name="Avg local loss",
+                    line=dict(color="#DD8452", width=2, dash="dot"),
+                    yaxis="y2",
+                ))
+                fig_acc_h.update_layout(
+                    title="Global model accuracy per FL round",
+                    xaxis_title="Round",
+                    yaxis=dict(title="Accuracy", side="left", range=[0, 1]),
+                    yaxis2=dict(title="Loss", side="right", overlaying="y"),
+                    height=350, margin=dict(t=50, b=30),
+                    legend=dict(orientation="h", y=-0.2),
+                )
+                acc_chart_h.plotly_chart(fig_acc_h, use_container_width=True)
+
+                df_log = pd.DataFrame(log_rows[-(n_hospitals * 3):])
+                log_table_h.dataframe(df_log, hide_index=True,
+                                      use_container_width=True)
+
+            progress_h.empty()
+            status_h.empty()
+
+            # ---- Final summary ----
+            final_acc_h = acc_history[-1]["Test acc"]
+            improvement = (final_acc_h - initial_acc_h) * 100
+
+            # ---- Persist trained model + stats so the prediction form can use it ----
+            # Feature names: known for Pima, generic otherwise
+            if uploaded_csv_data is None:
+                feat_names = [
+                    "Pregnancies", "Glucose", "BloodPressure", "SkinThickness",
+                    "Insulin", "BMI", "DiabetesPedigreeFunction", "Age",
+                ]
+                if len(feat_names) != n_features_h:
+                    feat_names = [f"feature_{i}" for i in range(n_features_h)]
+                class_names = ["Non-diabetic", "Diabetic"] if n_classes_h == 2 else \
+                              [f"Class {i}" for i in range(n_classes_h)]
+                dataset_label = "Pima Indians Diabetes"
+            else:
+                feat_names = [f"feature_{i}" for i in range(n_features_h)]
+                class_names = [f"Class {i}" for i in range(n_classes_h)]
+                dataset_label = "Custom uploaded CSV"
+
+            st.session_state["hosp_model"]        = global_model_h
+            st.session_state["hosp_n_features"]   = n_features_h
+            st.session_state["hosp_n_classes"]    = n_classes_h
+            st.session_state["hosp_feat_names"]   = feat_names
+            st.session_state["hosp_class_names"]  = class_names
+            st.session_state["hosp_mu"]           = mu          # (1, n_features)
+            st.session_state["hosp_sd"]           = sd
+            st.session_state["hosp_dataset_label"] = dataset_label
+            st.session_state["hosp_final_acc"]    = acc_history[-1]["Test acc"]
+
+            st.subheader("4. Final summary")
+            sm1, sm2, sm3, sm4 = st.columns(4)
+            sm1.metric("Initial accuracy",  f"{initial_acc_h:.2%}")
+            sm2.metric("Final accuracy",    f"{final_acc_h:.2%}",
+                       f"{improvement:+.1f} pp")
+            sm3.metric("Hospitals (clients)", n_hospitals)
+            sm4.metric("FL rounds completed", n_rounds_h)
+
+            st.success(
+                f"Federated training complete. Global accuracy improved by "
+                f"**{improvement:+.1f}** percentage points "
+                f"({initial_acc_h:.1%} -> {final_acc_h:.1%}) -- and **NO hospital ever shared "
+                f"its raw patient records**. Only model weight updates flowed."
+            )
+
+            st.subheader("Per-round trace")
+            df_acc_full = pd.DataFrame(acc_history)
+            df_acc_full["Test acc"]       = df_acc_full["Test acc"].apply(lambda v: f"{v:.2%}")
+            df_acc_full["Test loss"]      = df_acc_full["Test loss"].round(4)
+            df_acc_full["Avg local loss"] = df_acc_full["Avg local loss"].round(4)
+            st.dataframe(df_acc_full, hide_index=True, use_container_width=True)
+
+            with st.expander(f"Full per-client per-round update log "
+                              f"({len(log_rows)} entries)"):
+                st.dataframe(pd.DataFrame(log_rows),
+                             hide_index=True, use_container_width=True)
+                st.caption(
+                    "delta_L2 = magnitude of the weight update each hospital uploaded. "
+                    "These are the only values that left the hospital -- never the raw rows."
+                )
+
+            insight_box(
+                "Yeh exact privacy contract real federated learning provide karta hai. "
+                "zkFedMoE iske upar add karta hai: DP-SGD (gradients me noise), "
+                "SEPG proofs (server verify kar sake ki rules follow ho), Secure "
+                "Aggregation (server ko individual update bhi nahi dikhe), "
+                "Robust aggregation (malicious hospitals se bachao), and an "
+                "audit ledger (sab kuch tamper-evidently log)."
+            )
+
+        except Exception as exc:
+            progress_h.empty()
+            status_h.empty()
+            st.error(f"Hospital FL run failed: {exc}")
+            raise
+
+    # ----------------------------------------------------------------
+    # 5. Predict for a new patient (always visible after training)
+    # ----------------------------------------------------------------
+    st.divider()
+    st.subheader("5. Predict diabetes risk for a new patient")
+
+    if "hosp_model" not in st.session_state:
+        st.info(
+            "Run federated training above first. Once the global model is trained, "
+            "you can enter a hypothetical patient's measurements here and the model "
+            "will predict their diabetes risk -- without ever sending the data to "
+            "any individual hospital."
+        )
+    else:
+        st.caption(
+            f"Using global model trained on **{st.session_state['hosp_dataset_label']}** "
+            f"(test accuracy: **{st.session_state['hosp_final_acc']:.1%}**). "
+            "All inputs are processed locally by the global federated model."
+        )
+        feat_names_p   = st.session_state["hosp_feat_names"]
+        n_features_p   = st.session_state["hosp_n_features"]
+        n_classes_p    = st.session_state["hosp_n_classes"]
+        class_names_p  = st.session_state["hosp_class_names"]
+        mu_p           = st.session_state["hosp_mu"]
+        sd_p           = st.session_state["hosp_sd"]
+        model_p        = st.session_state["hosp_model"]
+
+        # Realistic Pima defaults if the dataset is Pima (so the form
+        # is pre-filled with a real-looking patient)
+        pima_default = {
+            "Pregnancies": 6, "Glucose": 148.0, "BloodPressure": 72.0,
+            "SkinThickness": 35.0, "Insulin": 0.0, "BMI": 33.6,
+            "DiabetesPedigreeFunction": 0.627, "Age": 50,
+        }
+
+        # Build input form (3 columns of number_inputs)
+        with st.form("hosp_predict_form"):
+            cols_p = st.columns(min(n_features_p, 4))
+            patient_vals = []
+            for i, fname in enumerate(feat_names_p):
+                col_p = cols_p[i % len(cols_p)]
+                default_val = pima_default.get(fname, 0.0)
+                # Pregnancies and Age are integers, rest are floats
+                if fname in ("Pregnancies", "Age"):
+                    val = col_p.number_input(
+                        fname, min_value=0, max_value=120,
+                        value=int(default_val), step=1,
+                        key=f"hosp_in_{i}",
+                    )
+                else:
+                    val = col_p.number_input(
+                        fname, min_value=0.0, max_value=1000.0,
+                        value=float(default_val), step=0.1,
+                        format="%.3f", key=f"hosp_in_{i}",
+                    )
+                patient_vals.append(float(val))
+
+            preset_col, predict_col = st.columns([2, 1])
+            preset = preset_col.selectbox(
+                "Or load a preset patient profile:",
+                ["(custom)",
+                 "High-risk: poor metabolic markers",
+                 "Low-risk: healthy young adult",
+                 "Borderline: mid-life, mixed signals"],
+                key="hosp_preset",
+            )
+            submitted = predict_col.form_submit_button(
+                "Predict diabetes risk", type="primary",
+                use_container_width=True,
+            )
+
+        # Apply preset if requested
+        if preset != "(custom)" and len(feat_names_p) == 8 and \
+           feat_names_p[0] == "Pregnancies":
+            presets_map = {
+                "High-risk: poor metabolic markers":
+                    [8.0, 187.0, 90.0, 36.0, 200.0, 38.5, 1.2, 55.0],
+                "Low-risk: healthy young adult":
+                    [0.0, 92.0, 70.0, 22.0, 75.0, 22.1, 0.18, 24.0],
+                "Borderline: mid-life, mixed signals":
+                    [3.0, 130.0, 80.0, 28.0, 110.0, 29.0, 0.55, 42.0],
+            }
+            if preset in presets_map:
+                patient_vals = presets_map[preset]
+
+        if submitted:
+            # Standardise using stored mean/std (same as training)
+            x_raw = np.array(patient_vals, dtype=np.float32).reshape(1, -1)
+            x_std = (x_raw - mu_p) / sd_p
+            x_tensor = torch.from_numpy(x_std).float()
+
+            model_p.eval()
+            with torch.no_grad():
+                logits_p = model_p(x_tensor)
+                probs_p = torch.softmax(logits_p, dim=-1).squeeze(0).numpy()
+
+            pred_idx = int(probs_p.argmax())
+            pred_label = class_names_p[pred_idx]
+            confidence = float(probs_p[pred_idx])
+
+            # Display result
+            st.markdown("---")
+            res_col1, res_col2 = st.columns([1, 2])
+            with res_col1:
+                if n_classes_p == 2 and pred_idx == 1:
+                    st.error(f"### {pred_label}")
+                elif n_classes_p == 2 and pred_idx == 0:
+                    st.success(f"### {pred_label}")
+                else:
+                    st.info(f"### {pred_label}")
+                st.metric("Model confidence", f"{confidence:.1%}")
+                st.caption(
+                    "Confidence is the soft-max probability of the predicted class. "
+                    "This is the *global* federated model -- it learned from every "
+                    "hospital's data without ever seeing any single hospital's records."
+                )
+
+            with res_col2:
+                # Probability bar chart
+                fig_pred = go.Figure(go.Bar(
+                    x=class_names_p,
+                    y=probs_p.tolist(),
+                    marker_color=["#FF6B6B" if i == pred_idx else "#4C72B0"
+                                  for i in range(n_classes_p)],
+                    text=[f"{p:.1%}" for p in probs_p],
+                    textposition="outside",
+                ))
+                fig_pred.update_layout(
+                    title="Class probability distribution",
+                    yaxis=dict(range=[0, 1.05], title="Probability"),
+                    height=320, margin=dict(t=50, b=20),
+                )
+                st.plotly_chart(fig_pred, use_container_width=True)
+
+            # Show input recap
+            with st.expander("Input values used for this prediction"):
+                df_in = pd.DataFrame({
+                    "Feature":          feat_names_p,
+                    "Raw value":        patient_vals,
+                    "Standardised (z)": x_std.flatten().round(3).tolist(),
+                })
+                st.dataframe(df_in, hide_index=True, use_container_width=True)
+
+
+# ---------------------------------------------------------------
+# PAGE: DISEASE PREDICT (symptom -> disease, federated across hospitals)
+# ---------------------------------------------------------------
+elif page == "Disease Predict":
+    page_banner(
+        "Disease Predict (Federated)",
+        "1000-hospital scenario · each hospital trains locally on its patients · "
+        "global model predicts disease from symptoms",
+        "🩺",
+    )
+    flow_bar(
+        ["Symptom dataset", "Split across hospitals", "Local train",
+         "Upload updates", "FedAvg", "Predict disease"],
+        "Predict disease",
+    )
+
+    concept_card(
+        "What this page does",
+        "Same federated-learning recipe as the Hospital FL Demo, but with a "
+        "**symptom -> disease** classifier. Each simulated hospital has its own "
+        "patient records (symptom checklists + diagnosed disease). They train "
+        "locally and share only model updates — never raw patient data. The "
+        "trained global model lets you tick off symptoms and predicts the most "
+        "likely disease."
+    )
+    concept_card(
+        "Dataset",
+        "Curated subset of the public 'Disease Symptom Prediction' dataset "
+        "(Kaggle, CC0 public domain). 24 disease classes, 70 binary symptoms. "
+        "We synthesise multiple variants per disease (random symptom drop + "
+        "noise) to model real-world incomplete reporting and confounders."
+    )
+
+    # Lazy import the dataset module
+    try:
+        from data.disease_symptoms import (
+            build_dataset as _build_disease_ds,
+            SYMPTOMS as _DIS_SYMPTOMS,
+            DISEASES as _DIS_DISEASES,
+        )
+    except Exception as _imp_exc:
+        st.error(f"Could not import disease dataset module: {_imp_exc}")
+        st.stop()
+
+    # ---- Configuration ----
+    st.subheader("1. Configure federation")
+    cfg_d1, cfg_d2, cfg_d3, cfg_d4 = st.columns(4)
+    n_hosp_d = cfg_d1.slider(
+        "Hospitals (clients)", 2, 50, 10, key="dis_n",
+        help="In production this would be ~1000+ hospitals. We simulate a "
+             "smaller subset for tractable training time.",
+    )
+    n_rounds_d = cfg_d2.slider("FL rounds", 1, 30, 12, key="dis_rounds")
+    alpha_d = cfg_d3.select_slider(
+        "Dirichlet α (heterogeneity)",
+        options=[0.1, 0.3, 0.5, 1.0, 5.0, 100.0], value=1.0, key="dis_alpha",
+    )
+    n_variants_d = cfg_d4.slider(
+        "Records per disease", 5, 60, 30, step=5, key="dis_variants",
+        help="Each disease class gets this many synthetic patient records "
+             "(canonical symptoms + random drop/noise).",
+    )
+
+    cfg_d5, cfg_d6, cfg_d7 = st.columns(3)
+    local_epochs_d = cfg_d5.slider(
+        "Local epochs / round", 1, 5, 2, key="dis_epochs",
+    )
+    lr_d = cfg_d6.select_slider(
+        "Learning rate",
+        options=[1e-4, 5e-4, 1e-3, 2e-3, 5e-3], value=2e-3, key="dis_lr",
+    )
+    batch_d = cfg_d7.slider("Batch size", 8, 64, 32, step=8, key="dis_batch")
+
+    st.caption(
+        f"Total dataset = **{n_variants_d} × {len(_DIS_DISEASES)} = "
+        f"{n_variants_d * len(_DIS_DISEASES)}** patient records, "
+        f"{len(_DIS_SYMPTOMS)} binary symptom features, "
+        f"{len(_DIS_DISEASES)} disease classes."
+    )
+
+    if st.button("🩺 Run Disease Federated Training",
+                 type="primary", use_container_width=True, key="dis_run"):
+        progress_d = st.progress(0.0)
+        status_d = st.empty()
+        try:
+            from torch.utils.data import TensorDataset, DataLoader, Subset
+
+            set_seed(42)
+            np.random.seed(42)
+
+            with st.spinner("Building symptom-disease dataset..."):
+                X_d, y_d, syms_d, dis_names_d = _build_disease_ds(
+                    n_variants=n_variants_d, seed=42,
+                )
+                n_features_d = X_d.shape[1]
+                n_classes_d = len(dis_names_d)
+
+                # Train/test split
+                n_total_d = X_d.shape[0]
+                n_test_d = max(int(0.2 * n_total_d), n_classes_d)
+                perm_d = np.random.permutation(n_total_d)
+                test_ix_d = perm_d[:n_test_d]
+                train_ix_d = perm_d[n_test_d:]
+
+                X_train_d = torch.from_numpy(X_d[train_ix_d]).float()
+                y_train_d = torch.from_numpy(y_d[train_ix_d]).long()
+                X_test_d = torch.from_numpy(X_d[test_ix_d]).float()
+                y_test_d = torch.from_numpy(y_d[test_ix_d]).long()
+
+                train_ds_d = TensorDataset(X_train_d, y_train_d)
+                test_ds_d = TensorDataset(X_test_d, y_test_d)
+
+            st.success(
+                f"Dataset built: {n_total_d} records, {n_features_d} symptoms, "
+                f"{n_classes_d} diseases "
+                f"({len(train_ix_d)} train / {len(test_ix_d)} test)."
+            )
+
+            # ---- Dirichlet split across hospitals ----
+            with st.spinner(f"Splitting across {n_hosp_d} hospitals..."):
+                rng_d = np.random.default_rng(42)
+                by_class_d = [np.where(y_train_d.numpy() == c)[0]
+                              for c in range(n_classes_d)]
+                for arr_c in by_class_d:
+                    rng_d.shuffle(arr_c)
+
+                client_ix_d = None
+                for _attempt in range(50):
+                    candidate = [[] for _ in range(n_hosp_d)]
+                    for c in range(n_classes_d):
+                        if len(by_class_d[c]) == 0:
+                            continue
+                        proportions = rng_d.dirichlet([alpha_d] * n_hosp_d)
+                        split_pts = (np.cumsum(proportions) *
+                                     len(by_class_d[c])).astype(int)[:-1]
+                        chunks = np.split(by_class_d[c], split_pts)
+                        for cid, chunk in enumerate(chunks):
+                            candidate[cid].extend(chunk.tolist())
+                    if min(len(ix) for ix in candidate) >= 3:
+                        client_ix_d = candidate
+                        break
+                if client_ix_d is None:
+                    client_ix_d = candidate
+
+                client_dss_d = [Subset(train_ds_d, ix) for ix in client_ix_d]
+
+            # Per-hospital records bar
+            hosp_sizes = [len(ix) for ix in client_ix_d]
+            df_hosp = pd.DataFrame({
+                "Hospital": [f"H{i}" for i in range(n_hosp_d)],
+                "Records": hosp_sizes,
+            })
+            fig_hosp = px.bar(
+                df_hosp, x="Hospital", y="Records",
+                title=f"Records per simulated hospital (α={alpha_d})",
+                color="Records",
+                color_continuous_scale="Viridis",
+            )
+            fig_hosp.update_layout(height=280, margin=dict(t=50, b=20))
+            st.plotly_chart(fig_hosp, use_container_width=True)
+            insight_box(
+                "Each bar is one hospital's local patient cohort. With "
+                "Dirichlet α small, sizes and class-mixes vary wildly "
+                "between hospitals — exactly what real FL deployments face."
+            )
+
+            # ---- Build symptom -> disease MLP ----
+            class _DiseaseClf(torch.nn.Module):
+                def __init__(self, in_f, hidden=64, n_cls=24):
+                    super().__init__()
+                    self.net = torch.nn.Sequential(
+                        torch.nn.Linear(in_f, hidden), torch.nn.ReLU(),
+                        torch.nn.Dropout(0.1),
+                        torch.nn.Linear(hidden, hidden), torch.nn.ReLU(),
+                        torch.nn.Linear(hidden, n_cls),
+                    )
+
+                def forward(self, x):
+                    return self.net(x)
+
+            global_model_d = _DiseaseClf(n_features_d, 64, n_classes_d)
+
+            def _eval_d(model, ds):
+                model.eval()
+                ldr = DataLoader(ds, batch_size=128, shuffle=False)
+                crit_e = torch.nn.CrossEntropyLoss(reduction="sum")
+                correct = total = 0
+                loss_sum = 0.0
+                with torch.no_grad():
+                    for X, y in ldr:
+                        out = model(X)
+                        loss_sum += crit_e(out, y).item()
+                        correct += int((out.argmax(-1) == y).sum())
+                        total += y.size(0)
+                return correct / max(total, 1), loss_sum / max(total, 1)
+
+            initial_acc_d, _ = _eval_d(global_model_d, test_ds_d)
+            st.info(
+                f"Initial (untrained) global model accuracy: "
+                f"**{initial_acc_d:.2%}** (random baseline = "
+                f"{1.0 / n_classes_d:.1%})"
+            )
+
+            # ---- FL loop ----
+            st.subheader(
+                f"2. Federated training "
+                f"({n_rounds_d} rounds × {n_hosp_d} hospitals)"
+            )
+            chart_col_d, log_col_d = st.columns(2)
+            acc_chart_d = chart_col_d.empty()
+            log_table_d = log_col_d.empty()
+            acc_history_d = []
+            log_rows_d = []
+
+            for rnd in range(1, n_rounds_d + 1):
+                global_state_d = {
+                    k: v.detach().cpu().clone()
+                    for k, v in global_model_d.state_dict().items()
+                }
+                client_updates_d = []
+                round_losses_d = []
+
+                for cid in range(n_hosp_d):
+                    if len(client_dss_d[cid]) == 0:
+                        continue
+                    local_model = _DiseaseClf(n_features_d, 64, n_classes_d)
+                    local_model.load_state_dict(global_state_d)
+                    local_model.train()
+                    loader_l = DataLoader(client_dss_d[cid],
+                                          batch_size=batch_d, shuffle=True)
+                    opt_l = torch.optim.Adam(local_model.parameters(), lr=lr_d)
+                    crit_l = torch.nn.CrossEntropyLoss()
+                    last_loss = 0.0
+                    for _ep in range(local_epochs_d):
+                        for Xb, yb in loader_l:
+                            opt_l.zero_grad()
+                            loss_l = crit_l(local_model(Xb), yb)
+                            loss_l.backward()
+                            opt_l.step()
+                            last_loss = loss_l.item()
+
+                    new_state = {
+                        k: v.detach().cpu().clone()
+                        for k, v in local_model.state_dict().items()
+                    }
+                    sq = 0.0
+                    for k in new_state:
+                        sq += float((new_state[k].float() -
+                                     global_state_d[k].float()).pow(2)
+                                    .sum().item())
+                    delta_l2 = sq ** 0.5
+                    log_rows_d.append({
+                        "Round": rnd,
+                        "Hospital": f"H{cid}",
+                        "Records": len(client_ix_d[cid]),
+                        "Local loss": round(last_loss, 4),
+                        "delta_L2": round(delta_l2, 4),
+                    })
+                    client_updates_d.append((new_state, len(client_ix_d[cid])))
+                    round_losses_d.append(last_loss)
+
+                # FedAvg
+                if not client_updates_d:
+                    st.error("No active hospitals — aborting.")
+                    st.stop()
+                total_n_d = sum(n for _, n in client_updates_d)
+                agg_state_d = {
+                    k: torch.zeros_like(client_updates_d[0][0][k]).float()
+                    for k in client_updates_d[0][0]
+                }
+                for state, n in client_updates_d:
+                    w = n / total_n_d
+                    for k in agg_state_d:
+                        agg_state_d[k] += state[k].float() * w
+                global_model_d.load_state_dict(agg_state_d)
+
+                acc_d, loss_d = _eval_d(global_model_d, test_ds_d)
+                acc_history_d.append({
+                    "Round": rnd,
+                    "Test acc": acc_d,
+                    "Test loss": loss_d,
+                    "Avg local loss": float(np.mean(round_losses_d)),
+                })
+
+                progress_d.progress(rnd / n_rounds_d)
+                status_d.markdown(
+                    f"**Round {rnd}/{n_rounds_d}** — global accuracy: "
+                    f"**{acc_d:.2%}**, test loss: {loss_d:.4f}"
+                )
+                df_acc_d = pd.DataFrame(acc_history_d)
+                fig_acc_d = go.Figure()
+                fig_acc_d.add_trace(go.Scatter(
+                    x=df_acc_d["Round"], y=df_acc_d["Test acc"],
+                    mode="lines+markers", name="Test accuracy",
+                    line=dict(color="#4C72B0", width=3),
+                ))
+                fig_acc_d.add_trace(go.Scatter(
+                    x=df_acc_d["Round"], y=df_acc_d["Avg local loss"],
+                    mode="lines+markers", name="Avg local loss",
+                    line=dict(color="#DD8452", width=2, dash="dot"),
+                    yaxis="y2",
+                ))
+                fig_acc_d.update_layout(
+                    title="Global model accuracy per FL round",
+                    xaxis_title="Round",
+                    yaxis=dict(title="Accuracy", side="left", range=[0, 1]),
+                    yaxis2=dict(title="Loss", side="right", overlaying="y"),
+                    height=350, margin=dict(t=50, b=30),
+                    legend=dict(orientation="h", y=-0.2),
+                )
+                acc_chart_d.plotly_chart(fig_acc_d, use_container_width=True)
+                df_log_d = pd.DataFrame(log_rows_d[-(n_hosp_d * 2):])
+                log_table_d.dataframe(df_log_d, hide_index=True,
+                                      use_container_width=True)
+
+            progress_d.empty()
+            status_d.empty()
+
+            final_acc_d = acc_history_d[-1]["Test acc"]
+            improvement_d = (final_acc_d - initial_acc_d) * 100
+
+            # Persist for the prediction form
+            st.session_state["disease_model"] = global_model_d
+            st.session_state["disease_n_features"] = n_features_d
+            st.session_state["disease_n_classes"] = n_classes_d
+            st.session_state["disease_symptoms"] = syms_d
+            st.session_state["disease_class_names"] = dis_names_d
+            st.session_state["disease_final_acc"] = final_acc_d
+            st.session_state["disease_n_hospitals"] = n_hosp_d
+            st.session_state["disease_n_rounds"] = n_rounds_d
+
+            st.subheader("3. Final summary")
+            sm_d1, sm_d2, sm_d3, sm_d4 = st.columns(4)
+            sm_d1.metric("Initial accuracy", f"{initial_acc_d:.2%}")
+            sm_d2.metric("Final accuracy", f"{final_acc_d:.2%}",
+                         f"{improvement_d:+.1f} pp")
+            sm_d3.metric("Hospitals", n_hosp_d)
+            sm_d4.metric("FL rounds", n_rounds_d)
+
+            st.success(
+                f"Federated training complete. Global symptom-to-disease "
+                f"accuracy improved by **{improvement_d:+.1f}** pp "
+                f"({initial_acc_d:.1%} -> {final_acc_d:.1%}). "
+                f"No hospital ever shared its raw patient symptom logs."
+            )
+
+            with st.expander(
+                f"Full per-client per-round update log "
+                f"({len(log_rows_d)} entries)"
+            ):
+                st.dataframe(pd.DataFrame(log_rows_d),
+                             hide_index=True, use_container_width=True)
+                st.caption(
+                    "delta_L2 is the L2 norm of the model-weight delta "
+                    "each hospital uploaded. Only these vectors flow "
+                    "to the server — never the raw symptom records."
+                )
+
+            insight_box(
+                "Yeh exactly woh setup hai jo real-world clinical FL me "
+                "use hota hai (e.g., NVIDIA Clara, Owkin Substra). Multiple "
+                "hospitals apna symptom-disease data locally rakhte hain, "
+                "global diagnostic model collaborate karke train hota hai, "
+                "aur kabhi bhi raw patient data leak nahi hota."
+            )
+
+        except Exception as exc:
+            progress_d.empty()
+            status_d.empty()
+            st.error(f"Disease FL run failed: {exc}")
+            raise
+
+    # ----------------------------------------------------------------
+    # Predict for a new patient (always visible after training)
+    # ----------------------------------------------------------------
+    st.divider()
+    st.subheader("4. Predict disease from symptoms")
+
+    if "disease_model" not in st.session_state:
+        st.info(
+            "Run federated training above first. Once the global model is "
+            "trained, you can pick a patient's symptoms and the model will "
+            "predict the most likely disease — without any hospital ever "
+            "sharing its raw records."
+        )
+    else:
+        st.caption(
+            f"Using global model trained across "
+            f"**{st.session_state['disease_n_hospitals']} hospitals** for "
+            f"**{st.session_state['disease_n_rounds']} FL rounds** "
+            f"(test accuracy: **{st.session_state['disease_final_acc']:.1%}**)."
+        )
+        syms_p = st.session_state["disease_symptoms"]
+        dis_p = st.session_state["disease_class_names"]
+        n_features_p_d = st.session_state["disease_n_features"]
+        model_p_d = st.session_state["disease_model"]
+
+        # Two ways to enter symptoms: free text OR multi-select
+        st.markdown("**How to enter symptoms:**")
+        entry_mode = st.radio(
+            "Input mode",
+            ["Multi-select checkboxes", "Free text (comma / space separated)"],
+            horizontal=True, key="dis_entry_mode",
+        )
+
+        # Pre-built example presets
+        with st.expander("Try a sample patient profile"):
+            preset_cols = st.columns(3)
+            preset_choice = preset_cols[0].selectbox(
+                "Preset",
+                ["(none)",
+                 "Flu-like fever",
+                 "Allergic reaction",
+                 "Diabetic warning signs",
+                 "Migraine episode",
+                 "Stomach upset"],
+                key="dis_preset",
+            )
+            preset_map = {
+                "Flu-like fever": [
+                    "chills", "high_fever", "sweating", "headache",
+                    "muscle_weakness", "fatigue",
+                ],
+                "Allergic reaction": [
+                    "continuous_sneezing", "chills", "throat_irritation",
+                    "runny_nose",
+                ],
+                "Diabetic warning signs": [
+                    "fatigue", "weight_loss", "restlessness", "lethargy",
+                    "irregular_sugar_level", "excessive_hunger",
+                    "blurred_and_distorted_vision",
+                ],
+                "Migraine episode": [
+                    "headache", "blurred_and_distorted_vision",
+                    "pain_behind_the_eyes", "nausea", "vomiting",
+                ],
+                "Stomach upset": [
+                    "vomiting", "diarrhoea", "dehydration", "abdominal_pain",
+                ],
+            }
+
+        # Initialize / sync from preset
+        preset_active = preset_map.get(preset_choice, None)
+
+        selected_symptoms: list[str] = []
+
+        if entry_mode == "Multi-select checkboxes":
+            # Default value: preset if chosen, else empty
+            default_sel = preset_active if preset_active else []
+            selected_symptoms = st.multiselect(
+                "Tick all symptoms the patient is reporting:",
+                options=syms_p,
+                default=default_sel,
+                key="dis_multi",
+            )
+        else:
+            default_text = ", ".join(preset_active) if preset_active else ""
+            free_text = st.text_input(
+                "Enter symptoms (comma or space separated, "
+                "use_underscores_for_phrases):",
+                value=default_text,
+                placeholder="e.g. high_fever, headache, vomiting, chills",
+                key="dis_free",
+            )
+            # Parse: split on commas and whitespace, normalise
+            tokens = [t.strip().lower().replace(" ", "_")
+                      for chunk in free_text.split(",")
+                      for t in chunk.split()]
+            sym_set = set(syms_p)
+            selected_symptoms = [t for t in tokens if t in sym_set]
+            unknown = [t for t in tokens if t and t not in sym_set]
+            if unknown:
+                st.warning(
+                    f"Unknown symptoms (ignored): {', '.join(unknown[:6])}. "
+                    f"Symptom list uses snake_case — see the multi-select "
+                    f"mode for the full vocabulary."
+                )
+
+        if selected_symptoms:
+            st.markdown(f"**Active symptoms ({len(selected_symptoms)}):** "
+                        + ", ".join(f"`{s}`" for s in selected_symptoms))
+
+        # Predict button
+        if st.button("Predict disease", type="primary",
+                     use_container_width=True, key="dis_predict_btn"):
+            if not selected_symptoms:
+                st.warning("Please select at least one symptom first.")
+            else:
+                # Build multi-hot vector
+                sym2ix = {s: i for i, s in enumerate(syms_p)}
+                vec = np.zeros(n_features_p_d, dtype=np.float32)
+                for s in selected_symptoms:
+                    if s in sym2ix:
+                        vec[sym2ix[s]] = 1.0
+
+                x_t = torch.from_numpy(vec).unsqueeze(0).float()
+                model_p_d.eval()
+                with torch.no_grad():
+                    logits_pd = model_p_d(x_t)
+                    probs_pd = torch.softmax(logits_pd, dim=-1).squeeze(0).numpy()
+
+                pred_ix = int(probs_pd.argmax())
+                pred_name = dis_p[pred_ix]
+                conf = float(probs_pd[pred_ix])
+
+                # Top-5 alternates
+                top_k = min(5, len(dis_p))
+                top_ix = np.argsort(probs_pd)[::-1][:top_k]
+
+                st.markdown("---")
+                rc1, rc2 = st.columns([1, 2])
+                with rc1:
+                    st.error(f"### {pred_name}")
+                    st.metric("Confidence", f"{conf:.1%}")
+                    st.caption(
+                        "Predicted by the **global federated model** — built "
+                        "by aggregating updates from "
+                        f"{st.session_state['disease_n_hospitals']} "
+                        "hospitals without ever transferring patient data."
+                    )
+
+                with rc2:
+                    fig_top = go.Figure(go.Bar(
+                        x=[dis_p[i] for i in top_ix][::-1],
+                        y=[probs_pd[i] for i in top_ix][::-1],
+                        orientation="v",
+                        marker_color=[
+                            "#FF6B6B" if i == pred_ix else "#4C72B0"
+                            for i in top_ix
+                        ][::-1],
+                        text=[f"{probs_pd[i]:.1%}" for i in top_ix][::-1],
+                        textposition="outside",
+                    ))
+                    fig_top.update_layout(
+                        title=f"Top-{top_k} most likely diseases",
+                        yaxis=dict(range=[0, 1.05], title="Probability"),
+                        xaxis_tickangle=-30,
+                        height=360, margin=dict(t=50, b=80),
+                    )
+                    st.plotly_chart(fig_top, use_container_width=True)
+
+                # Match score: how many of the predicted disease's canonical
+                # symptoms did the patient report?
+                try:
+                    from data.disease_symptoms import DISEASE_SYMPTOMS
+                    canonical = set(DISEASE_SYMPTOMS.get(pred_name, []))
+                    reported = set(selected_symptoms)
+                    overlap = canonical & reported
+                    extra = reported - canonical
+                    missing = canonical - reported
+
+                    with st.expander("Why this prediction?"):
+                        col_w1, col_w2, col_w3 = st.columns(3)
+                        col_w1.metric(
+                            "Canonical match",
+                            f"{len(overlap)}/{len(canonical) if canonical else 0}",
+                        )
+                        col_w2.metric("Extra symptoms", len(extra))
+                        col_w3.metric("Missing canonical", len(missing))
+                        st.markdown(
+                            f"**Canonical symptoms of {pred_name}:** "
+                            + (", ".join(f"`{s}`" for s in sorted(canonical))
+                               if canonical else "_none recorded_")
+                        )
+                        if overlap:
+                            st.markdown(
+                                "**Matched (you reported):** "
+                                + ", ".join(f"`{s}`" for s in sorted(overlap))
+                            )
+                        if missing:
+                            st.markdown(
+                                "**Missing (canonical but not reported):** "
+                                + ", ".join(f"`{s}`" for s in sorted(missing))
+                            )
+                        if extra:
+                            st.markdown(
+                                "**Extra (reported but not canonical):** "
+                                + ", ".join(f"`{s}`" for s in sorted(extra))
+                            )
+                except Exception:
+                    pass
+
+                st.caption(
+                    "_Disclaimer: This is a research demo trained on "
+                    "synthetic-from-clinical-prior data. Not a substitute for "
+                    "professional medical diagnosis._"
+                )
 
 
 # ---------------------------------------------------------------

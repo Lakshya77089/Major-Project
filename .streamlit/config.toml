@@ -1,0 +1,5 @@
+[server]
+# Disable the file watcher to avoid noisy `torch.classes.__path__._path`
+# warnings from PyTorch's custom __getattr__ on every rescan. Restart
+# manually (Ctrl-C then re-run) when you change source.
+fileWatcherType = "none"

@@ -159,16 +159,26 @@ def build_dataset(
     n_variants: int = 20,
     noise_prob: float = 0.05,
     drop_prob: float = 0.10,
+    sparse_subset_prob: float = 0.35,
     seed: int = 42,
 ) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
     """
     Build a synthetic-from-clinical-prior symptom -> disease dataset.
 
-    For each (disease, variant) we start from the canonical symptom set
-    of that disease, randomly drop a few symptoms (drop_prob) to simulate
-    incomplete reporting, and randomly add a few unrelated symptoms
-    (noise_prob) to simulate confounders / co-morbidities. This gives
-    the model real signal to learn while making the task non-trivial.
+    For each (disease, variant) we generate one of two row types:
+
+      1. **Full presentation** (prob = 1 - sparse_subset_prob):
+         start from the canonical symptom set, drop each independently with
+         drop_prob (incomplete reporting), then sprinkle confounder noise
+         (noise_prob). Models a "complete chart" — many symptoms recorded.
+
+      2. **Sparse presentation** (prob = sparse_subset_prob):
+         pick a random subset of 1-3 canonical symptoms with no noise.
+         Models the realistic case where a patient walks in reporting just
+         one or two symptoms ("I just have a cough"). Without these rows,
+         the model never sees 1-hot vectors at training time and produces
+         arbitrary predictions for sparse user queries — top-1 collapses
+         to ~OOD-noise level even though full-row top-1 is 99%.
 
     Returns:
         X: (N, n_symptoms) float32, multi-hot
@@ -179,7 +189,6 @@ def build_dataset(
     rng = np.random.default_rng(seed)
     symptoms, sym2ix = build_symptom_vocab()
     n_sym = len(symptoms)
-    n_dis = len(DISEASES)
 
     rows_X: list[np.ndarray] = []
     rows_y: list[int] = []
@@ -188,25 +197,50 @@ def build_dataset(
         canonical = DISEASE_SYMPTOMS.get(disease, [])
         canonical_ix = [sym2ix[s] for s in canonical if s in sym2ix]
         if not canonical_ix:
-            # Disease referenced unknown symptoms; skip with a single zero row
             continue
 
         for _v in range(n_variants):
             vec = np.zeros(n_sym, dtype=np.float32)
-            # Plant canonical symptoms, but drop each independently
-            for sx in canonical_ix:
-                if rng.random() > drop_prob:
+
+            if rng.random() < sparse_subset_prob:
+                # Sparse presentation: 1-3 canonical symptoms, no noise.
+                k_pick = int(rng.integers(1, min(4, len(canonical_ix) + 1)))
+                picks = rng.choice(canonical_ix, size=k_pick, replace=False)
+                for sx in picks:
                     vec[sx] = 1.0
-            # Inject noise symptoms (confounders)
-            for sx in range(n_sym):
-                if vec[sx] == 0.0 and rng.random() < noise_prob:
-                    vec[sx] = 1.0
-            # Guarantee at least one symptom is on
-            if vec.sum() == 0.0 and canonical_ix:
-                vec[canonical_ix[0]] = 1.0
+            else:
+                # Full presentation: canonical with drops + noise.
+                for sx in canonical_ix:
+                    if rng.random() > drop_prob:
+                        vec[sx] = 1.0
+                for sx in range(n_sym):
+                    if vec[sx] == 0.0 and rng.random() < noise_prob:
+                        vec[sx] = 1.0
+                if vec.sum() == 0.0:
+                    vec[canonical_ix[0]] = 1.0
+
             rows_X.append(vec)
             rows_y.append(d_ix)
 
     X = np.stack(rows_X, axis=0).astype(np.float32)
     y = np.array(rows_y, dtype=np.int64)
     return X, y, symptoms, list(DISEASES)
+
+
+def disease_symptom_matrix() -> np.ndarray:
+    """
+    Boolean (n_diseases, n_symptoms) matrix marking which symptoms each
+    disease canonically presents with.  Used at inference time as a coverage
+    prior: a disease that doesn't list ANY of the user's reported symptoms
+    in its canonical set should be heavily down-weighted regardless of what
+    the noisy federated MLP says.
+    """
+    symptoms, sym2ix = build_symptom_vocab()
+    n_sym = len(symptoms)
+    n_dis = len(DISEASES)
+    M = np.zeros((n_dis, n_sym), dtype=np.float32)
+    for d_ix, disease in enumerate(DISEASES):
+        for s in DISEASE_SYMPTOMS.get(disease, []):
+            if s in sym2ix:
+                M[d_ix, sym2ix[s]] = 1.0
+    return M

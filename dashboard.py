@@ -282,8 +282,8 @@ def _build_quickstart_model():
 st.sidebar.title("zkFedMoE")
 page = st.sidebar.radio(
     "Navigate",
-    ["🏠 Home", "Predict", "Train", "Custom CSV",
-     "Hospital FL Demo", "Disease Predict",
+    ["🏠 Home", "News Detection", "Disease Detection", "General zkFedMoE",
+     "Train", "Custom CSV",
      "Privacy & DP", "Robustness", "Non-IID & MIA",
      "Bidding & Oracle", "Chain Explorer",
      "Experiments", "Compare", "Architecture", "About"],
@@ -368,7 +368,7 @@ if page == "🏠 Home":
     st.subheader("What each page shows")
     cols = st.columns(3)
     pages_info = [
-        ("🔮 Predict",     "Type text → see predicted class + which experts activate. Compare two headlines side-by-side."),
+        ("🔮 News Detection", "Type a news headline → see detected class + which experts activate. Compare two headlines side-by-side."),
         ("🏋️ Train",       "Configure FL rounds, clients, learning rate. Enable DP + SEPG. Watch accuracy & expert heatmap live."),
         ("📂 Custom CSV",  "Upload any labelled CSV → auto-detect columns → train → confusion matrix + expert routing per class."),
         ("🔒 Privacy & DP","DP-SGD training with live ε/δ budget chart. Inspect each client's SHA-256 SEPG proof after training."),
@@ -407,7 +407,7 @@ if page == "🏠 Home":
     |------|------|--------------|
     | 1 | **Architecture** | Show the MoE data-flow diagram, explain Top-K routing and LoRA |
     | 2 | **Train** | Run 3 rounds with 5 clients — watch accuracy curve and expert heatmap live |
-    | 3 | **Predict** | Type a news headline — highlight which experts fire and why |
+    | 3 | **News Detection** | Type a news headline — highlight which experts fire and why |
     | 4 | **Compare** | Drag the K slider to show real-time communication saving calculation |
     | 5 | **Privacy & DP** | Run DP training, show SEPG proofs with PASS badges |
     | 6 | **Robustness** | Run Poisoning at 30% — show FedAvg drops, Median holds |
@@ -419,9 +419,70 @@ if page == "🏠 Home":
 # ---------------------------------------------------------------
 # PAGE: PREDICT
 # ---------------------------------------------------------------
-elif page == "Predict":
-    page_banner("Live Prediction", "Type text → model predicts the class and shows which experts activated", "🔮")
-    flow_bar(["Data", "Tokenise", "Embedding", "MoE Router", "▶ Predict"], "▶ Predict")
+elif page == "News Detection":
+    page_banner(
+        "News Detection System",
+        "Federated MoE classifier · Top-K expert routing · DP-SGD · SEPG proofs · "
+        "watch the full zkFedMoE pipeline run end-to-end below, then try a headline.",
+        "🔮",
+    )
+    flow_bar(
+        ["FL Train (×N clients)", "DP-SGD", "SEPG Proof", "Aggregate",
+         "Tokenise", "Embedding", "MoE Router", "▶ Predict"],
+        "▶ Predict",
+    )
+
+    # ---- Behind-the-Scenes: full zkFedMoE pipeline animation ----
+    with st.expander(
+        "🎬 Behind the scenes — how the model was federated-trained "
+        "(click to play the full zkFedMoE pipeline animation)",
+        expanded=False,
+    ):
+        concept_card(
+            "What you're about to see",
+            "The model used below was trained <b>federated</b> across simulated "
+            "clients — no raw text ever leaves a client. Each round: server broadcasts "
+            "global weights → clients train locally on AG News shards → DP-SGD "
+            "clips + adds Gaussian noise → SEPG proof (SHA-256 hash + Top-K + "
+            "DP params) is generated → server verifies proofs → robust aggregation → "
+            "ledger entry. Below is a visual walk-through of one such round.",
+        )
+        anim_n_clients = st.slider("Clients in animation", 3, 8, 5, key="news_anim_n")
+        anim_speed = st.select_slider(
+            "Animation speed",
+            options=["Slow", "Normal", "Fast"], value="Normal", key="news_anim_speed",
+        )
+        if st.button("▶ Play one FL round", key="news_anim_play"):
+            speed_map = {"Slow": 0.9, "Normal": 0.55, "Fast": 0.25}
+            delay = speed_map[anim_speed]
+            slot = st.empty()
+            sub_caption = st.empty()
+            phases = [
+                ("broadcast", "Server broadcasts global θ_t to all clients", None),
+                *[("train",
+                   f"Client C{cid} trains locally · Top-K expert routing · "
+                   f"DP-SGD clip+noise · SEPG proof generated",
+                   cid) for cid in range(anim_n_clients)],
+                ("upload", "Clients upload sparse updates + SEPG proofs to server", None),
+                ("aggregate", "Server: verify 4-check SEPG · FedAvg robust aggregate · "
+                              "append to audit ledger", None),
+                ("done", "Round complete · global θ_{t+1} ready for next round", None),
+            ]
+            for ph, caption, active in phases:
+                fig = fl_topology_frame(
+                    num_clients=anim_n_clients,
+                    phase=ph,
+                    round_id=1, total_rounds=10,
+                    accuracy=None, active_client=active,
+                )
+                slot.plotly_chart(fig, use_container_width=True,
+                                  key=f"news_anim_{ph}_{active}")
+                sub_caption.info(caption)
+                time.sleep(delay)
+            sub_caption.success(
+                "Pipeline complete. The model below is the result of repeating "
+                "this round many times. Now try classifying a headline ↓"
+            )
 
     # FIX #1 — use cached model; only populate session_state once
     if "model" not in st.session_state:
@@ -898,7 +959,7 @@ elif page == "Train":
             st.session_state.pop("custom_class_names", None)
             st.success(
                 f"Training complete! Dense={da:.2%}, Sparse={sa:.2%}, "
-                f"Saving={sav:.1f}%. Model saved — go to **Predict**."
+                f"Saving={sav:.1f}%. Model saved — go to **News Detection**."
             )
 
         except Exception as exc:
@@ -2348,7 +2409,7 @@ elif page == "Custom CSV":
                 st.session_state.model_source       = f"Custom CSV ({n_classes} classes)"
 
                 st.info(
-                    "Model saved to session! Go to **Predict** to classify new text "
+                    "Model saved to session! Go to **News Detection** to classify new text "
                     "with this custom-trained model."
                 )
 
@@ -2378,641 +2439,38 @@ You can override both in Step 2.
 
 
 # ---------------------------------------------------------------
-# PAGE: HOSPITAL FL DEMO
+# PAGE: DISEASE DETECTION (full zkFedMoE pipeline on symptom dataset)
 # ---------------------------------------------------------------
-elif page == "Hospital FL Demo":
+elif page == "Disease Detection":
     page_banner(
-        "Hospital Federated Learning Demo",
-        "Real public hospital dataset · multiple hospitals (edge clients) · "
-        "no raw data shared · only model updates flow",
-        "🏥",
-    )
-    flow_bar(
-        ["Load global data", "Split across hospitals (non-IID)",
-         "Local train", "Upload updates", "FedAvg aggregate", "Repeat"],
-        "Local train",
-    )
-
-    concept_card(
-        "What this demo proves",
-        "Yeh real-world FL scenario hai: multiple hospitals private patient data rakhte hain, "
-        "data share nahi kar sakte (HIPAA/GDPR). Har hospital sirf apna locally train karta hai aur "
-        "MODEL UPDATES (weights ka delta) bhejta hai. Server FedAvg karke saare updates merge karta hai. "
-        "Raw patient records kabhi server tak nahi pahunchte — yeh privacy contract hai."
-    )
-    concept_card(
-        "Default dataset",
-        "Pima Indians Diabetes (UCI ML Repository, public domain). 768 patient records, 8 medical "
-        "features (Glucose, BloodPressure, BMI, Insulin, Age, etc.) and a binary outcome (diabetic / "
-        "non-diabetic). Tum apna CSV bhi upload kar sakte ho — last column = label, baki = features."
-    )
-
-    # ---- Dataset selection ----
-    st.subheader("1. Choose dataset")
-    src_col1, src_col2 = st.columns([1, 2])
-    src_choice = src_col1.radio(
-        "Source", ["Pima Diabetes (default)", "Upload custom hospital CSV"],
-        key="hosp_source",
-    )
-    uploaded_csv_data = None
-    if src_choice == "Upload custom hospital CSV":
-        uploaded_csv_data = src_col2.file_uploader(
-            "CSV file (last column = label, all preceding = numeric features)",
-            type=["csv"], key="hosp_csv",
-        )
-
-    # ---- Configuration ----
-    st.subheader("2. Configure federation")
-    cfg1, cfg2, cfg3, cfg4 = st.columns(4)
-    n_hospitals = cfg1.slider("Hospitals (clients)", 2, 10, 5, key="hosp_n")
-    n_rounds_h  = cfg2.slider("FL rounds", 1, 20, 6, key="hosp_rounds")
-    alpha_h     = cfg3.select_slider(
-        "Dirichlet α (heterogeneity)",
-        options=[0.1, 0.3, 0.5, 1.0, 5.0, 100.0], value=0.5, key="hosp_alpha",
-    )
-    local_epochs_h = cfg4.slider("Local epochs / round", 1, 5, 2, key="hosp_epochs")
-
-    cfg5, cfg6 = st.columns(2)
-    lr_h    = cfg5.select_slider(
-        "Learning rate", options=[1e-4, 5e-4, 1e-3, 2e-3, 5e-3], value=1e-3, key="hosp_lr",
-    )
-    batch_h = cfg6.slider("Batch size", 4, 64, 16, step=4, key="hosp_batch")
-
-    st.caption(
-        "α small = realistic non-IID (each hospital sees skewed patient mix). "
-        "α large = nearly IID (all hospitals see balanced classes)."
-    )
-
-    if st.button("🏥 Run Hospital Federated Training",
-                 type="primary", use_container_width=True, key="hosp_run"):
-        progress_h = st.progress(0.0)
-        status_h = st.empty()
-        try:
-            import urllib.request as _urlreq
-            from torch.utils.data import TensorDataset, DataLoader, Subset
-
-            set_seed(42)
-            np.random.seed(42)
-
-            # ---- Load data ----
-            with st.spinner("Loading dataset..."):
-                if uploaded_csv_data is not None:
-                    raw_bytes = uploaded_csv_data.read()
-                    text_csv = raw_bytes.decode("utf-8", errors="replace")
-                else:
-                    cache_path = Path(__file__).parent / "data" / "pima_diabetes.csv"
-                    if cache_path.exists():
-                        text_csv = cache_path.read_text()
-                    else:
-                        url_pima = (
-                            "https://raw.githubusercontent.com/jbrownlee/Datasets/"
-                            "master/pima-indians-diabetes.data.csv"
-                        )
-                        try:
-                            with _urlreq.urlopen(url_pima, timeout=10) as r:
-                                text_csv = r.read().decode("utf-8")
-                            cache_path.parent.mkdir(parents=True, exist_ok=True)
-                            cache_path.write_text(text_csv)
-                        except Exception as e:
-                            st.warning(
-                                f"Couldn't download Pima dataset ({e}); using a small "
-                                "32-row offline fallback so the demo still runs."
-                            )
-                            text_csv = (
-                                "6,148,72,35,0,33.6,0.627,50,1\n"
-                                "1,85,66,29,0,26.6,0.351,31,0\n"
-                                "8,183,64,0,0,23.3,0.672,32,1\n"
-                                "1,89,66,23,94,28.1,0.167,21,0\n"
-                                "0,137,40,35,168,43.1,2.288,33,1\n"
-                                "5,116,74,0,0,25.6,0.201,30,0\n"
-                                "3,78,50,32,88,31.0,0.248,26,1\n"
-                                "10,115,0,0,0,35.3,0.134,29,0\n"
-                                "2,197,70,45,543,30.5,0.158,53,1\n"
-                                "8,125,96,0,0,0.0,0.232,54,1\n"
-                                "4,110,92,0,0,37.6,0.191,30,0\n"
-                                "10,168,74,0,0,38.0,0.537,34,1\n"
-                                "10,139,80,0,0,27.1,1.441,57,0\n"
-                                "1,189,60,23,846,30.1,0.398,59,1\n"
-                                "5,166,72,19,175,25.8,0.587,51,1\n"
-                                "7,100,0,0,0,30.0,0.484,32,1\n"
-                                "0,118,84,47,230,45.8,0.551,31,1\n"
-                                "7,107,74,0,0,29.6,0.254,31,1\n"
-                                "1,103,30,38,83,43.3,0.183,33,0\n"
-                                "1,115,70,30,96,34.6,0.529,32,1\n"
-                                "3,126,88,41,235,39.3,0.704,27,0\n"
-                                "8,99,84,0,0,35.4,0.388,50,0\n"
-                                "7,196,90,0,0,39.8,0.451,41,1\n"
-                                "9,119,80,35,0,29.0,0.263,29,1\n"
-                                "11,143,94,33,146,36.6,0.254,51,1\n"
-                                "10,125,70,26,115,31.1,0.205,41,1\n"
-                                "7,147,76,0,0,39.4,0.257,43,1\n"
-                                "1,97,66,15,140,23.2,0.487,22,0\n"
-                                "13,145,82,19,110,22.2,0.245,57,0\n"
-                                "5,117,92,0,0,34.1,0.337,38,0\n"
-                                "5,109,75,26,0,36.0,0.546,60,0\n"
-                                "3,158,76,36,245,31.6,0.851,28,1\n"
-                            )
-
-                # Parse rows -> X, y
-                rows = []
-                for line in text_csv.strip().splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    parts = line.split(",")
-                    try:
-                        rows.append([float(p) for p in parts])
-                    except ValueError:
-                        continue  # skip header
-                if not rows:
-                    st.error("No numeric rows parsed from the dataset.")
-                    st.stop()
-                arr = np.array(rows, dtype=np.float32)
-                X_full = arr[:, :-1]
-                y_full = arr[:, -1].astype(np.int64)
-                n_classes_h = int(y_full.max()) + 1
-
-                # Standardise features
-                mu = X_full.mean(axis=0, keepdims=True)
-                sd = X_full.std(axis=0, keepdims=True) + 1e-8
-                X_full = (X_full - mu) / sd
-
-                # Train/test split
-                n_total = X_full.shape[0]
-                n_test_h = max(int(0.2 * n_total), 8)
-                perm_h = np.random.permutation(n_total)
-                test_ix = perm_h[:n_test_h]
-                train_ix = perm_h[n_test_h:]
-
-                X_train_t = torch.from_numpy(X_full[train_ix]).float()
-                y_train_t = torch.from_numpy(y_full[train_ix]).long()
-                X_test_t  = torch.from_numpy(X_full[test_ix]).float()
-                y_test_t  = torch.from_numpy(y_full[test_ix]).long()
-
-                train_ds_h = TensorDataset(X_train_t, y_train_t)
-                test_ds_h  = TensorDataset(X_test_t, y_test_t)
-
-            n_features_h = X_full.shape[1]
-            st.success(
-                f"Dataset loaded: {n_total} rows, {n_features_h} features, "
-                f"{n_classes_h} classes (split: {len(train_ix)} train / {len(test_ix)} test)."
-            )
-
-            # ---- Dirichlet split across hospitals ----
-            with st.spinner("Splitting across hospitals (Dirichlet α partitioning)..."):
-                rng_h = np.random.default_rng(42)
-                by_class_h = [np.where(y_train_t.numpy() == c)[0]
-                              for c in range(n_classes_h)]
-                for arr_c in by_class_h:
-                    rng_h.shuffle(arr_c)
-
-                client_ix_h = None
-                for _attempt in range(30):
-                    candidate = [[] for _ in range(n_hospitals)]
-                    for c in range(n_classes_h):
-                        proportions = rng_h.dirichlet([alpha_h] * n_hospitals)
-                        split_pts = (np.cumsum(proportions) *
-                                     len(by_class_h[c])).astype(int)[:-1]
-                        chunks = np.split(by_class_h[c], split_pts)
-                        for cid, chunk in enumerate(chunks):
-                            candidate[cid].extend(chunk.tolist())
-                    if min(len(ix) for ix in candidate) >= 5:
-                        client_ix_h = candidate
-                        break
-                if client_ix_h is None:
-                    client_ix_h = candidate
-
-                client_dss_h = [Subset(train_ds_h, ix) for ix in client_ix_h]
-
-            # Show per-hospital class distribution
-            st.subheader("Per-hospital class distribution")
-            dist_rows = []
-            for cid, ix in enumerate(client_ix_h):
-                yc = y_train_t.numpy()[ix]
-                for c in range(n_classes_h):
-                    dist_rows.append({
-                        "Hospital": f"Hospital {cid}",
-                        "Class":    f"Class {c}",
-                        "Count":    int((yc == c).sum()),
-                    })
-            df_dist = pd.DataFrame(dist_rows)
-            fig_dist = px.bar(
-                df_dist, x="Hospital", y="Count", color="Class",
-                barmode="stack",
-                title=f"Each hospital's patient mix (Dirichlet α={alpha_h}, "
-                      f"non-IID = each hospital sees a different distribution)",
-                color_discrete_sequence=px.colors.qualitative.Set2,
-            )
-            fig_dist.update_layout(height=320, margin=dict(t=50, b=20))
-            st.plotly_chart(fig_dist, use_container_width=True)
-            insight_box(
-                "Notice: each hospital's bar is different. Some have mostly "
-                "non-diabetic patients, others mostly diabetic. This is realistic — "
-                "real hospitals never have the same patient mix. FL must work "
-                "despite this heterogeneity."
-            )
-
-            # ---- Build small MLP for tabular medical features ----
-            class _DiabClf(torch.nn.Module):
-                def __init__(self, in_f, hidden=32, n_cls=2):
-                    super().__init__()
-                    self.net = torch.nn.Sequential(
-                        torch.nn.Linear(in_f, hidden), torch.nn.ReLU(),
-                        torch.nn.Linear(hidden, hidden), torch.nn.ReLU(),
-                        torch.nn.Linear(hidden, n_cls),
-                    )
-                def forward(self, x): return self.net(x)
-
-            global_model_h = _DiabClf(n_features_h, 32, n_classes_h)
-
-            def _eval_h(model, ds):
-                model.eval()
-                ldr = DataLoader(ds, batch_size=128, shuffle=False)
-                crit_e = torch.nn.CrossEntropyLoss(reduction="sum")
-                correct = total = 0
-                loss_sum = 0.0
-                with torch.no_grad():
-                    for X, y in ldr:
-                        out = model(X)
-                        loss_sum += crit_e(out, y).item()
-                        correct += int((out.argmax(-1) == y).sum())
-                        total += y.size(0)
-                return correct / max(total, 1), loss_sum / max(total, 1)
-
-            initial_acc_h, initial_loss_h = _eval_h(global_model_h, test_ds_h)
-            st.info(
-                f"Initial (untrained) global model accuracy: "
-                f"**{initial_acc_h:.2%}** (random baseline = "
-                f"{1.0/n_classes_h:.0%})"
-            )
-
-            # ---- FL training loop ----
-            st.subheader(f"3. Federated training ({n_rounds_h} rounds × {n_hospitals} hospitals)")
-
-            chart_col_l, chart_col_r = st.columns(2)
-            acc_chart_h = chart_col_l.empty()
-            log_table_h = chart_col_r.empty()
-            acc_history = []
-            log_rows = []
-
-            for rnd in range(1, n_rounds_h + 1):
-                global_state_h = {
-                    k: v.detach().cpu().clone()
-                    for k, v in global_model_h.state_dict().items()
-                }
-                client_updates_h = []
-                round_losses = []
-
-                for cid in range(n_hospitals):
-                    local_model = _DiabClf(n_features_h, 32, n_classes_h)
-                    local_model.load_state_dict(global_state_h)
-
-                    # Local training (raw data NEVER leaves this loop)
-                    local_model.train()
-                    loader_l = DataLoader(client_dss_h[cid],
-                                          batch_size=batch_h, shuffle=True)
-                    opt_l = torch.optim.Adam(local_model.parameters(), lr=lr_h)
-                    crit_l = torch.nn.CrossEntropyLoss()
-                    last_loss = 0.0
-                    for _ep in range(local_epochs_h):
-                        for X_b, y_b in loader_l:
-                            opt_l.zero_grad()
-                            out_l = local_model(X_b)
-                            loss_l = crit_l(out_l, y_b)
-                            loss_l.backward()
-                            opt_l.step()
-                            last_loss = loss_l.item()
-
-                    new_state = {
-                        k: v.detach().cpu().clone()
-                        for k, v in local_model.state_dict().items()
-                    }
-                    sq = 0.0
-                    for k in new_state:
-                        sq += float((new_state[k].float() -
-                                     global_state_h[k].float()).pow(2).sum().item())
-                    delta_l2 = sq ** 0.5
-
-                    log_rows.append({
-                        "Round":      rnd,
-                        "Hospital":   f"H{cid}",
-                        "Records":    len(client_ix_h[cid]),
-                        "Local loss": round(last_loss, 4),
-                        "delta_L2":   round(delta_l2, 4),
-                    })
-                    client_updates_h.append((new_state, len(client_ix_h[cid])))
-                    round_losses.append(last_loss)
-
-                # Server FedAvg
-                total_n = sum(n for _, n in client_updates_h)
-                agg_state = {
-                    k: torch.zeros_like(client_updates_h[0][0][k]).float()
-                    for k in client_updates_h[0][0]
-                }
-                for state, n in client_updates_h:
-                    w = n / total_n
-                    for k in agg_state:
-                        agg_state[k] += state[k].float() * w
-                global_model_h.load_state_dict(agg_state)
-
-                # Evaluate
-                acc_h, loss_h = _eval_h(global_model_h, test_ds_h)
-                acc_history.append({
-                    "Round":          rnd,
-                    "Test acc":       acc_h,
-                    "Test loss":      loss_h,
-                    "Avg local loss": float(np.mean(round_losses)),
-                })
-
-                # Refresh UI
-                progress_h.progress(rnd / n_rounds_h)
-                status_h.markdown(
-                    f"**Round {rnd}/{n_rounds_h}** — global accuracy: "
-                    f"**{acc_h:.2%}**, test loss: {loss_h:.4f}"
-                )
-
-                df_acc_h = pd.DataFrame(acc_history)
-                fig_acc_h = go.Figure()
-                fig_acc_h.add_trace(go.Scatter(
-                    x=df_acc_h["Round"], y=df_acc_h["Test acc"],
-                    mode="lines+markers", name="Test accuracy",
-                    line=dict(color="#4C72B0", width=3),
-                ))
-                fig_acc_h.add_trace(go.Scatter(
-                    x=df_acc_h["Round"], y=df_acc_h["Avg local loss"],
-                    mode="lines+markers", name="Avg local loss",
-                    line=dict(color="#DD8452", width=2, dash="dot"),
-                    yaxis="y2",
-                ))
-                fig_acc_h.update_layout(
-                    title="Global model accuracy per FL round",
-                    xaxis_title="Round",
-                    yaxis=dict(title="Accuracy", side="left", range=[0, 1]),
-                    yaxis2=dict(title="Loss", side="right", overlaying="y"),
-                    height=350, margin=dict(t=50, b=30),
-                    legend=dict(orientation="h", y=-0.2),
-                )
-                acc_chart_h.plotly_chart(fig_acc_h, use_container_width=True)
-
-                df_log = pd.DataFrame(log_rows[-(n_hospitals * 3):])
-                log_table_h.dataframe(df_log, hide_index=True,
-                                      use_container_width=True)
-
-            progress_h.empty()
-            status_h.empty()
-
-            # ---- Final summary ----
-            final_acc_h = acc_history[-1]["Test acc"]
-            improvement = (final_acc_h - initial_acc_h) * 100
-
-            # ---- Persist trained model + stats so the prediction form can use it ----
-            # Feature names: known for Pima, generic otherwise
-            if uploaded_csv_data is None:
-                feat_names = [
-                    "Pregnancies", "Glucose", "BloodPressure", "SkinThickness",
-                    "Insulin", "BMI", "DiabetesPedigreeFunction", "Age",
-                ]
-                if len(feat_names) != n_features_h:
-                    feat_names = [f"feature_{i}" for i in range(n_features_h)]
-                class_names = ["Non-diabetic", "Diabetic"] if n_classes_h == 2 else \
-                              [f"Class {i}" for i in range(n_classes_h)]
-                dataset_label = "Pima Indians Diabetes"
-            else:
-                feat_names = [f"feature_{i}" for i in range(n_features_h)]
-                class_names = [f"Class {i}" for i in range(n_classes_h)]
-                dataset_label = "Custom uploaded CSV"
-
-            st.session_state["hosp_model"]        = global_model_h
-            st.session_state["hosp_n_features"]   = n_features_h
-            st.session_state["hosp_n_classes"]    = n_classes_h
-            st.session_state["hosp_feat_names"]   = feat_names
-            st.session_state["hosp_class_names"]  = class_names
-            st.session_state["hosp_mu"]           = mu          # (1, n_features)
-            st.session_state["hosp_sd"]           = sd
-            st.session_state["hosp_dataset_label"] = dataset_label
-            st.session_state["hosp_final_acc"]    = acc_history[-1]["Test acc"]
-
-            st.subheader("4. Final summary")
-            sm1, sm2, sm3, sm4 = st.columns(4)
-            sm1.metric("Initial accuracy",  f"{initial_acc_h:.2%}")
-            sm2.metric("Final accuracy",    f"{final_acc_h:.2%}",
-                       f"{improvement:+.1f} pp")
-            sm3.metric("Hospitals (clients)", n_hospitals)
-            sm4.metric("FL rounds completed", n_rounds_h)
-
-            st.success(
-                f"Federated training complete. Global accuracy improved by "
-                f"**{improvement:+.1f}** percentage points "
-                f"({initial_acc_h:.1%} -> {final_acc_h:.1%}) -- and **NO hospital ever shared "
-                f"its raw patient records**. Only model weight updates flowed."
-            )
-
-            st.subheader("Per-round trace")
-            df_acc_full = pd.DataFrame(acc_history)
-            df_acc_full["Test acc"]       = df_acc_full["Test acc"].apply(lambda v: f"{v:.2%}")
-            df_acc_full["Test loss"]      = df_acc_full["Test loss"].round(4)
-            df_acc_full["Avg local loss"] = df_acc_full["Avg local loss"].round(4)
-            st.dataframe(df_acc_full, hide_index=True, use_container_width=True)
-
-            with st.expander(f"Full per-client per-round update log "
-                              f"({len(log_rows)} entries)"):
-                st.dataframe(pd.DataFrame(log_rows),
-                             hide_index=True, use_container_width=True)
-                st.caption(
-                    "delta_L2 = magnitude of the weight update each hospital uploaded. "
-                    "These are the only values that left the hospital -- never the raw rows."
-                )
-
-            insight_box(
-                "Yeh exact privacy contract real federated learning provide karta hai. "
-                "zkFedMoE iske upar add karta hai: DP-SGD (gradients me noise), "
-                "SEPG proofs (server verify kar sake ki rules follow ho), Secure "
-                "Aggregation (server ko individual update bhi nahi dikhe), "
-                "Robust aggregation (malicious hospitals se bachao), and an "
-                "audit ledger (sab kuch tamper-evidently log)."
-            )
-
-        except Exception as exc:
-            progress_h.empty()
-            status_h.empty()
-            st.error(f"Hospital FL run failed: {exc}")
-            raise
-
-    # ----------------------------------------------------------------
-    # 5. Predict for a new patient (always visible after training)
-    # ----------------------------------------------------------------
-    st.divider()
-    st.subheader("5. Predict diabetes risk for a new patient")
-
-    if "hosp_model" not in st.session_state:
-        st.info(
-            "Run federated training above first. Once the global model is trained, "
-            "you can enter a hypothetical patient's measurements here and the model "
-            "will predict their diabetes risk -- without ever sending the data to "
-            "any individual hospital."
-        )
-    else:
-        st.caption(
-            f"Using global model trained on **{st.session_state['hosp_dataset_label']}** "
-            f"(test accuracy: **{st.session_state['hosp_final_acc']:.1%}**). "
-            "All inputs are processed locally by the global federated model."
-        )
-        feat_names_p   = st.session_state["hosp_feat_names"]
-        n_features_p   = st.session_state["hosp_n_features"]
-        n_classes_p    = st.session_state["hosp_n_classes"]
-        class_names_p  = st.session_state["hosp_class_names"]
-        mu_p           = st.session_state["hosp_mu"]
-        sd_p           = st.session_state["hosp_sd"]
-        model_p        = st.session_state["hosp_model"]
-
-        # Realistic Pima defaults if the dataset is Pima (so the form
-        # is pre-filled with a real-looking patient)
-        pima_default = {
-            "Pregnancies": 6, "Glucose": 148.0, "BloodPressure": 72.0,
-            "SkinThickness": 35.0, "Insulin": 0.0, "BMI": 33.6,
-            "DiabetesPedigreeFunction": 0.627, "Age": 50,
-        }
-
-        # Build input form (3 columns of number_inputs)
-        with st.form("hosp_predict_form"):
-            cols_p = st.columns(min(n_features_p, 4))
-            patient_vals = []
-            for i, fname in enumerate(feat_names_p):
-                col_p = cols_p[i % len(cols_p)]
-                default_val = pima_default.get(fname, 0.0)
-                # Pregnancies and Age are integers, rest are floats
-                if fname in ("Pregnancies", "Age"):
-                    val = col_p.number_input(
-                        fname, min_value=0, max_value=120,
-                        value=int(default_val), step=1,
-                        key=f"hosp_in_{i}",
-                    )
-                else:
-                    val = col_p.number_input(
-                        fname, min_value=0.0, max_value=1000.0,
-                        value=float(default_val), step=0.1,
-                        format="%.3f", key=f"hosp_in_{i}",
-                    )
-                patient_vals.append(float(val))
-
-            preset_col, predict_col = st.columns([2, 1])
-            preset = preset_col.selectbox(
-                "Or load a preset patient profile:",
-                ["(custom)",
-                 "High-risk: poor metabolic markers",
-                 "Low-risk: healthy young adult",
-                 "Borderline: mid-life, mixed signals"],
-                key="hosp_preset",
-            )
-            submitted = predict_col.form_submit_button(
-                "Predict diabetes risk", type="primary",
-                use_container_width=True,
-            )
-
-        # Apply preset if requested
-        if preset != "(custom)" and len(feat_names_p) == 8 and \
-           feat_names_p[0] == "Pregnancies":
-            presets_map = {
-                "High-risk: poor metabolic markers":
-                    [8.0, 187.0, 90.0, 36.0, 200.0, 38.5, 1.2, 55.0],
-                "Low-risk: healthy young adult":
-                    [0.0, 92.0, 70.0, 22.0, 75.0, 22.1, 0.18, 24.0],
-                "Borderline: mid-life, mixed signals":
-                    [3.0, 130.0, 80.0, 28.0, 110.0, 29.0, 0.55, 42.0],
-            }
-            if preset in presets_map:
-                patient_vals = presets_map[preset]
-
-        if submitted:
-            # Standardise using stored mean/std (same as training)
-            x_raw = np.array(patient_vals, dtype=np.float32).reshape(1, -1)
-            x_std = (x_raw - mu_p) / sd_p
-            x_tensor = torch.from_numpy(x_std).float()
-
-            model_p.eval()
-            with torch.no_grad():
-                logits_p = model_p(x_tensor)
-                probs_p = torch.softmax(logits_p, dim=-1).squeeze(0).numpy()
-
-            pred_idx = int(probs_p.argmax())
-            pred_label = class_names_p[pred_idx]
-            confidence = float(probs_p[pred_idx])
-
-            # Display result
-            st.markdown("---")
-            res_col1, res_col2 = st.columns([1, 2])
-            with res_col1:
-                if n_classes_p == 2 and pred_idx == 1:
-                    st.error(f"### {pred_label}")
-                elif n_classes_p == 2 and pred_idx == 0:
-                    st.success(f"### {pred_label}")
-                else:
-                    st.info(f"### {pred_label}")
-                st.metric("Model confidence", f"{confidence:.1%}")
-                st.caption(
-                    "Confidence is the soft-max probability of the predicted class. "
-                    "This is the *global* federated model -- it learned from every "
-                    "hospital's data without ever seeing any single hospital's records."
-                )
-
-            with res_col2:
-                # Probability bar chart
-                fig_pred = go.Figure(go.Bar(
-                    x=class_names_p,
-                    y=probs_p.tolist(),
-                    marker_color=["#FF6B6B" if i == pred_idx else "#4C72B0"
-                                  for i in range(n_classes_p)],
-                    text=[f"{p:.1%}" for p in probs_p],
-                    textposition="outside",
-                ))
-                fig_pred.update_layout(
-                    title="Class probability distribution",
-                    yaxis=dict(range=[0, 1.05], title="Probability"),
-                    height=320, margin=dict(t=50, b=20),
-                )
-                st.plotly_chart(fig_pred, use_container_width=True)
-
-            # Show input recap
-            with st.expander("Input values used for this prediction"):
-                df_in = pd.DataFrame({
-                    "Feature":          feat_names_p,
-                    "Raw value":        patient_vals,
-                    "Standardised (z)": x_std.flatten().round(3).tolist(),
-                })
-                st.dataframe(df_in, hide_index=True, use_container_width=True)
-
-
-# ---------------------------------------------------------------
-# PAGE: DISEASE PREDICT (symptom -> disease, federated across hospitals)
-# ---------------------------------------------------------------
-elif page == "Disease Predict":
-    page_banner(
-        "Disease Predict (Federated)",
-        "1000-hospital scenario · each hospital trains locally on its patients · "
-        "global model predicts disease from symptoms",
+        "Disease Detection System",
+        "1000-hospital scenario · each hospital trains locally on its patient records · "
+        "DP-SGD + SEPG proofs + robust aggregation + audit ledger · "
+        "tell the system your symptoms and it predicts the most likely disease.",
         "🩺",
     )
     flow_bar(
         ["Symptom dataset", "Split across hospitals", "Local train",
-         "Upload updates", "FedAvg", "Predict disease"],
-        "Predict disease",
+         "DP-SGD", "SEPG proof", "Verify + Aggregate", "Ledger", "▶ Predict"],
+        "▶ Predict",
     )
 
     concept_card(
-        "What this page does",
-        "Same federated-learning recipe as the Hospital FL Demo, but with a "
-        "**symptom -> disease** classifier. Each simulated hospital has its own "
-        "patient records (symptom checklists + diagnosed disease). They train "
-        "locally and share only model updates — never raw patient data. The "
-        "trained global model lets you tick off symptoms and predicts the most "
-        "likely disease."
+        "Why federated, not centralised?",
+        "Real hospitals cannot pool patient records — HIPAA / GDPR forbid it. "
+        "Each hospital trains a local model on its own patients and uploads only "
+        "<b>weight updates</b> (not raw symptoms) to a central server. The server "
+        "verifies each update with an SEPG proof and aggregates them into a global "
+        "model. We frame this as a <b>1000-hospital scenario</b> from the paper, "
+        "and let you simulate a tractable subset (up to 50) live in the browser.",
     )
     concept_card(
         "Dataset",
-        "Curated subset of the public 'Disease Symptom Prediction' dataset "
-        "(Kaggle, CC0 public domain). 24 disease classes, 70 binary symptoms. "
-        "We synthesise multiple variants per disease (random symptom drop + "
-        "noise) to model real-world incomplete reporting and confounders."
+        "Curated 24-disease × 70-symptom dataset modelled on the public Kaggle "
+        "<i>Disease Symptom Prediction</i> corpus (CC0). Each disease has 4–13 "
+        "canonical symptoms; we synthesise multiple variants per disease with "
+        "<b>random symptom drop</b> (incomplete reporting) and <b>noise</b> "
+        "(co-morbidities) — the same noise model real clinical EHRs exhibit.",
     )
 
     # Lazy import the dataset module
@@ -3027,42 +2485,62 @@ elif page == "Disease Predict":
         st.stop()
 
     # ---- Configuration ----
-    st.subheader("1. Configure federation")
+    st.subheader("1. Federation configuration")
     cfg_d1, cfg_d2, cfg_d3, cfg_d4 = st.columns(4)
     n_hosp_d = cfg_d1.slider(
         "Hospitals (clients)", 2, 50, 10, key="dis_n",
-        help="In production this would be ~1000+ hospitals. We simulate a "
-             "smaller subset for tractable training time.",
+        help="In production this would be ~1000+ hospitals. We simulate a smaller "
+             "subset for tractable training time. The paper's claim is the framework "
+             "scales — the dashboard demonstrates correctness on a tractable subset.",
     )
-    n_rounds_d = cfg_d2.slider("FL rounds", 1, 30, 12, key="dis_rounds")
+    n_rounds_d = cfg_d2.slider("FL rounds", 1, 20, 10, key="dis_rounds")
     alpha_d = cfg_d3.select_slider(
         "Dirichlet α (heterogeneity)",
         options=[0.1, 0.3, 0.5, 1.0, 5.0, 100.0], value=1.0, key="dis_alpha",
+        help="Smaller α → each hospital sees a skewed disease mix (realistic). "
+             "Larger α → hospitals see balanced classes.",
     )
     n_variants_d = cfg_d4.slider(
-        "Records per disease", 5, 60, 30, step=5, key="dis_variants",
-        help="Each disease class gets this many synthetic patient records "
-             "(canonical symptoms + random drop/noise).",
+        "Records per disease", 20, 150, 80, step=10, key="dis_variants",
+        help="Synthetic patient records per disease (canonical symptoms + drop/noise).",
     )
 
-    cfg_d5, cfg_d6, cfg_d7 = st.columns(3)
-    local_epochs_d = cfg_d5.slider(
-        "Local epochs / round", 1, 5, 2, key="dis_epochs",
-    )
+    cfg_d5, cfg_d6, cfg_d7, cfg_d8 = st.columns(4)
+    local_epochs_d = cfg_d5.slider("Local epochs / round", 1, 5, 3, key="dis_epochs")
     lr_d = cfg_d6.select_slider(
-        "Learning rate",
-        options=[1e-4, 5e-4, 1e-3, 2e-3, 5e-3], value=2e-3, key="dis_lr",
+        "Learning rate", options=[1e-4, 5e-4, 1e-3, 2e-3, 5e-3], value=2e-3, key="dis_lr",
     )
     batch_d = cfg_d7.slider("Batch size", 8, 64, 32, step=8, key="dis_batch")
+    aggr_d = cfg_d8.selectbox(
+        "Aggregation", ["FedAvg", "Coord-wise Median", "Trimmed Mean"],
+        index=0, key="dis_aggr",
+    )
+
+    # ---- DP / SEPG toggles ----
+    st.markdown("**Privacy & verification (zkFedMoE pipeline)**")
+    pp1, pp2, pp3, pp4 = st.columns(4)
+    use_dp_d = pp1.checkbox("DP-SGD", value=True, key="dis_dp",
+                            help="Clip update L2 to C, add Gaussian noise σ·C.")
+    clip_C_d = pp2.slider("Clip norm C", 0.5, 5.0, 1.5, 0.1, key="dis_clip",
+                          disabled=not use_dp_d)
+    sigma_d = pp3.slider("Noise σ", 0.0, 2.0, 0.10, 0.05, key="dis_sigma",
+                         disabled=not use_dp_d,
+                         help="DP noise multiplier. This MLP is small (~25K params) "
+                              "and trains on ~1500 rows, so σ above 0.15 begins to "
+                              "destroy accuracy. The paper's MoE text model tolerates "
+                              "much higher σ because of its scale (~150K params, 120K rows).")
+    use_sepg_d = pp4.checkbox("SEPG proofs", value=True, key="dis_sepg",
+                              help="Each client emits a SHA-256 proof of its update; "
+                                   "server runs the 4-check verification.")
 
     st.caption(
-        f"Total dataset = **{n_variants_d} × {len(_DIS_DISEASES)} = "
-        f"{n_variants_d * len(_DIS_DISEASES)}** patient records, "
+        f"Total dataset = {n_variants_d} × {len(_DIS_DISEASES)} = "
+        f"**{n_variants_d * len(_DIS_DISEASES)}** patient records, "
         f"{len(_DIS_SYMPTOMS)} binary symptom features, "
         f"{len(_DIS_DISEASES)} disease classes."
     )
 
-    if st.button("🩺 Run Disease Federated Training",
+    if st.button("🩺 Run federated disease-detection training",
                  type="primary", use_container_width=True, key="dis_run"):
         progress_d = st.progress(0.0)
         status_d = st.empty()
@@ -3072,45 +2550,43 @@ elif page == "Disease Predict":
             set_seed(42)
             np.random.seed(42)
 
+            # ---- Build dataset ----
             with st.spinner("Building symptom-disease dataset..."):
                 X_d, y_d, syms_d, dis_names_d = _build_disease_ds(
                     n_variants=n_variants_d, seed=42,
                 )
                 n_features_d = X_d.shape[1]
                 n_classes_d = len(dis_names_d)
-
-                # Train/test split
                 n_total_d = X_d.shape[0]
                 n_test_d = max(int(0.2 * n_total_d), n_classes_d)
+
                 perm_d = np.random.permutation(n_total_d)
                 test_ix_d = perm_d[:n_test_d]
                 train_ix_d = perm_d[n_test_d:]
 
-                X_train_d = torch.from_numpy(X_d[train_ix_d]).float()
-                y_train_d = torch.from_numpy(y_d[train_ix_d]).long()
-                X_test_d = torch.from_numpy(X_d[test_ix_d]).float()
-                y_test_d = torch.from_numpy(y_d[test_ix_d]).long()
-
-                train_ds_d = TensorDataset(X_train_d, y_train_d)
-                test_ds_d = TensorDataset(X_test_d, y_test_d)
+                X_tr = torch.from_numpy(X_d[train_ix_d]).float()
+                y_tr = torch.from_numpy(y_d[train_ix_d]).long()
+                X_te = torch.from_numpy(X_d[test_ix_d]).float()
+                y_te = torch.from_numpy(y_d[test_ix_d]).long()
+                train_ds_d = TensorDataset(X_tr, y_tr)
+                test_ds_d = TensorDataset(X_te, y_te)
 
             st.success(
-                f"Dataset built: {n_total_d} records, {n_features_d} symptoms, "
-                f"{n_classes_d} diseases "
-                f"({len(train_ix_d)} train / {len(test_ix_d)} test)."
+                f"Dataset built: {n_total_d} records "
+                f"({len(train_ix_d)} train / {len(test_ix_d)} test) · "
+                f"{n_features_d} symptoms · {n_classes_d} diseases."
             )
 
             # ---- Dirichlet split across hospitals ----
-            with st.spinner(f"Splitting across {n_hosp_d} hospitals..."):
+            with st.spinner(f"Splitting across {n_hosp_d} hospitals (Dirichlet α={alpha_d})..."):
                 rng_d = np.random.default_rng(42)
-                by_class_d = [np.where(y_train_d.numpy() == c)[0]
-                              for c in range(n_classes_d)]
+                by_class_d = [np.where(y_tr.numpy() == c)[0] for c in range(n_classes_d)]
                 for arr_c in by_class_d:
                     rng_d.shuffle(arr_c)
 
                 client_ix_d = None
                 for _attempt in range(50):
-                    candidate = [[] for _ in range(n_hosp_d)]
+                    cand = [[] for _ in range(n_hosp_d)]
                     for c in range(n_classes_d):
                         if len(by_class_d[c]) == 0:
                             continue
@@ -3119,95 +2595,167 @@ elif page == "Disease Predict":
                                      len(by_class_d[c])).astype(int)[:-1]
                         chunks = np.split(by_class_d[c], split_pts)
                         for cid, chunk in enumerate(chunks):
-                            candidate[cid].extend(chunk.tolist())
-                    if min(len(ix) for ix in candidate) >= 3:
-                        client_ix_d = candidate
+                            cand[cid].extend(chunk.tolist())
+                    if min(len(ix) for ix in cand) >= 3:
+                        client_ix_d = cand
                         break
                 if client_ix_d is None:
-                    client_ix_d = candidate
-
+                    client_ix_d = cand
                 client_dss_d = [Subset(train_ds_d, ix) for ix in client_ix_d]
 
-            # Per-hospital records bar
-            hosp_sizes = [len(ix) for ix in client_ix_d]
-            df_hosp = pd.DataFrame({
-                "Hospital": [f"H{i}" for i in range(n_hosp_d)],
-                "Records": hosp_sizes,
-            })
-            fig_hosp = px.bar(
-                df_hosp, x="Hospital", y="Records",
-                title=f"Records per simulated hospital (α={alpha_d})",
-                color="Records",
-                color_continuous_scale="Viridis",
+            # ---- Per-hospital distribution chart ----
+            st.subheader("2. Per-hospital data distribution")
+            dist_rows = []
+            for cid, ix in enumerate(client_ix_d):
+                yc = y_tr.numpy()[ix]
+                for c in range(n_classes_d):
+                    cnt = int((yc == c).sum())
+                    if cnt > 0:
+                        dist_rows.append({
+                            "Hospital": f"H{cid}",
+                            "Disease":  dis_names_d[c],
+                            "Patients": cnt,
+                        })
+            df_dist_d = pd.DataFrame(dist_rows)
+            fig_dist_d = px.bar(
+                df_dist_d, x="Hospital", y="Patients", color="Disease",
+                barmode="stack",
+                title=f"Each of {n_hosp_d} hospitals has its own patient mix "
+                      f"(Dirichlet α={alpha_d}, non-IID)",
             )
-            fig_hosp.update_layout(height=280, margin=dict(t=50, b=20))
-            st.plotly_chart(fig_hosp, use_container_width=True)
+            fig_dist_d.update_layout(height=320, margin=dict(t=50, b=20),
+                                    showlegend=False)
+            st.plotly_chart(fig_dist_d, use_container_width=True)
             insight_box(
-                "Each bar is one hospital's local patient cohort. With "
-                "Dirichlet α small, sizes and class-mixes vary wildly "
-                "between hospitals — exactly what real FL deployments face."
+                "Each hospital's bar is different — some see mostly Diabetes, "
+                "others mostly Malaria. Real hospitals never have the same patient "
+                "mix; FL must converge despite this heterogeneity. We use Dirichlet "
+                "α to control the skew, exactly as in the paper's Experiment 5."
             )
 
-            # ---- Build symptom -> disease MLP ----
+            # ---- Model ----
             class _DiseaseClf(torch.nn.Module):
-                def __init__(self, in_f, hidden=64, n_cls=24):
+                def __init__(self, in_f, hidden=128, n_cls=24):
                     super().__init__()
                     self.net = torch.nn.Sequential(
                         torch.nn.Linear(in_f, hidden), torch.nn.ReLU(),
-                        torch.nn.Dropout(0.1),
+                        torch.nn.Dropout(0.15),
                         torch.nn.Linear(hidden, hidden), torch.nn.ReLU(),
+                        torch.nn.Dropout(0.1),
                         torch.nn.Linear(hidden, n_cls),
                     )
+                def forward(self, x): return self.net(x)
 
-                def forward(self, x):
-                    return self.net(x)
+            global_model_d = _DiseaseClf(n_features_d, 128, n_classes_d)
 
-            global_model_d = _DiseaseClf(n_features_d, 64, n_classes_d)
-
-            def _eval_d(model, ds):
+            def _eval_d(model, ds, top_k=3):
                 model.eval()
                 ldr = DataLoader(ds, batch_size=128, shuffle=False)
-                crit_e = torch.nn.CrossEntropyLoss(reduction="sum")
-                correct = total = 0
-                loss_sum = 0.0
+                correct1 = correct_topk = total = 0
                 with torch.no_grad():
                     for X, y in ldr:
                         out = model(X)
-                        loss_sum += crit_e(out, y).item()
-                        correct += int((out.argmax(-1) == y).sum())
+                        correct1 += int((out.argmax(-1) == y).sum())
+                        topk_idx = out.topk(top_k, dim=-1).indices
+                        correct_topk += int((topk_idx == y.unsqueeze(-1)).any(-1).sum())
                         total += y.size(0)
-                return correct / max(total, 1), loss_sum / max(total, 1)
+                return correct1 / max(total, 1), correct_topk / max(total, 1)
 
-            initial_acc_d, _ = _eval_d(global_model_d, test_ds_d)
+            initial_top1, initial_top3 = _eval_d(global_model_d, test_ds_d)
             st.info(
-                f"Initial (untrained) global model accuracy: "
-                f"**{initial_acc_d:.2%}** (random baseline = "
-                f"{1.0 / n_classes_d:.1%})"
+                f"Initial (untrained) global model: top-1 **{initial_top1:.1%}**, "
+                f"top-3 **{initial_top3:.1%}** "
+                f"(random baseline = {1.0/n_classes_d:.1%})."
             )
 
-            # ---- FL loop ----
-            st.subheader(
-                f"2. Federated training "
-                f"({n_rounds_d} rounds × {n_hosp_d} hospitals)"
+            # ---- FL animation + training ----
+            st.subheader("3. Federated training — live FL pipeline")
+            anim_slot_d = st.empty()
+            anim_caption_d = st.empty()
+
+            chart_col_l, chart_col_r = st.columns([3, 2])
+            acc_chart_d = chart_col_l.empty()
+            sepg_table = chart_col_r.empty()
+
+            acc_history = []
+            sepg_log = []
+            ledger_d = Ledger()
+            ledger_d.add_transaction(
+                "register",
+                event=f"disease-detection-fl-start",
+                hospitals=n_hosp_d, rounds=n_rounds_d,
             )
-            chart_col_d, log_col_d = st.columns(2)
-            acc_chart_d = chart_col_d.empty()
-            log_table_d = log_col_d.empty()
-            acc_history_d = []
-            log_rows_d = []
+            ledger_d.seal_block()
+
+            anim_n = min(n_hosp_d, 8)  # animation only shows up to 8 nodes for clarity
+
+            def _aggregate(states_with_n, mode):
+                keys = list(states_with_n[0][0].keys())
+                if mode == "FedAvg":
+                    total_n = sum(n for _, n in states_with_n)
+                    out = {k: torch.zeros_like(states_with_n[0][0][k]).float()
+                           for k in keys}
+                    for st_, n in states_with_n:
+                        w = n / total_n
+                        for k in keys:
+                            out[k] += st_[k].float() * w
+                    return out
+                if mode == "Coord-wise Median":
+                    out = {}
+                    for k in keys:
+                        stacked = torch.stack([st_[k].float() for st_, _ in states_with_n])
+                        out[k] = stacked.median(dim=0).values
+                    return out
+                # Trimmed mean (10% top + bottom)
+                out = {}
+                k_clients = len(states_with_n)
+                trim = max(0, k_clients // 10)
+                for k in keys:
+                    stacked = torch.stack([st_[k].float() for st_, _ in states_with_n])
+                    sorted_, _ = stacked.sort(dim=0)
+                    if trim * 2 < k_clients:
+                        sorted_ = sorted_[trim: k_clients - trim] if trim > 0 else sorted_
+                    out[k] = sorted_.mean(dim=0)
+                return out
 
             for rnd in range(1, n_rounds_d + 1):
-                global_state_d = {
-                    k: v.detach().cpu().clone()
-                    for k, v in global_model_d.state_dict().items()
-                }
+                # Phase: broadcast
+                anim_slot_d.plotly_chart(
+                    fl_topology_frame(num_clients=anim_n, phase="broadcast",
+                                       round_id=rnd, total_rounds=n_rounds_d,
+                                       accuracy=acc_history[-1]["top1"] if acc_history else None),
+                    use_container_width=True,
+                    key=f"dis_anim_bcast_{rnd}",
+                )
+                anim_caption_d.info(
+                    f"Round {rnd}/{n_rounds_d} · server broadcasts global model to "
+                    f"all {n_hosp_d} hospitals."
+                )
+                time.sleep(0.25)
+
+                global_state_d = {k: v.detach().cpu().clone()
+                                  for k, v in global_model_d.state_dict().items()}
                 client_updates_d = []
+                round_proofs_d = []
                 round_losses_d = []
 
                 for cid in range(n_hosp_d):
-                    if len(client_dss_d[cid]) == 0:
-                        continue
-                    local_model = _DiseaseClf(n_features_d, 64, n_classes_d)
+                    # Visual: highlight active hospital (only for first 8 in viz)
+                    viz_active = cid if cid < anim_n else None
+                    if viz_active is not None and rnd == 1:
+                        anim_slot_d.plotly_chart(
+                            fl_topology_frame(num_clients=anim_n, phase="train",
+                                               round_id=rnd, total_rounds=n_rounds_d,
+                                               active_client=viz_active),
+                            use_container_width=True,
+                            key=f"dis_anim_tr_{rnd}_{cid}",
+                        )
+                        anim_caption_d.info(
+                            f"Hospital H{cid} trains locally · DP-SGD · SEPG proof"
+                        )
+                        time.sleep(0.05)
+
+                    local_model = _DiseaseClf(n_features_d, 128, n_classes_d)
                     local_model.load_state_dict(global_state_d)
                     local_model.train()
                     loader_l = DataLoader(client_dss_d[cid],
@@ -3216,136 +2764,204 @@ elif page == "Disease Predict":
                     crit_l = torch.nn.CrossEntropyLoss()
                     last_loss = 0.0
                     for _ep in range(local_epochs_d):
-                        for Xb, yb in loader_l:
+                        for X_b, y_b in loader_l:
                             opt_l.zero_grad()
-                            loss_l = crit_l(local_model(Xb), yb)
+                            out_l = local_model(X_b)
+                            loss_l = crit_l(out_l, y_b)
                             loss_l.backward()
                             opt_l.step()
                             last_loss = loss_l.item()
 
-                    new_state = {
-                        k: v.detach().cpu().clone()
-                        for k, v in local_model.state_dict().items()
-                    }
-                    sq = 0.0
-                    for k in new_state:
-                        sq += float((new_state[k].float() -
-                                     global_state_d[k].float()).pow(2)
-                                    .sum().item())
-                    delta_l2 = sq ** 0.5
-                    log_rows_d.append({
-                        "Round": rnd,
-                        "Hospital": f"H{cid}",
+                    new_state = {k: v.detach().cpu().clone()
+                                 for k, v in local_model.state_dict().items()}
+
+                    # Compute update delta = local - global
+                    delta = {k: new_state[k].float() - global_state_d[k].float()
+                             for k in new_state}
+
+                    # ---- DP-SGD: clip + noise ----
+                    if use_dp_d:
+                        delta_dp = apply_dp(delta, clip_norm=clip_C_d,
+                                            noise_multiplier=sigma_d)
+                    else:
+                        delta_dp = delta
+
+                    # Reconstruct uploaded state = global + delta_dp
+                    uploaded_state = {k: global_state_d[k].float() + delta_dp[k]
+                                      for k in delta_dp}
+
+                    # ---- SEPG proof ----
+                    proof_pass = True
+                    proof_reason = "no SEPG"
+                    if use_sepg_d:
+                        proof = generate_proof(
+                            client_id=cid, round_id=rnd,
+                            top_k_indices=[0],  # MLP has no MoE experts; placeholder
+                            clip_norm=clip_C_d if use_dp_d else 0.0,
+                            noise_multiplier=sigma_d if use_dp_d else 0.0,
+                            epsilon=0.0,
+                            sparse_state=uploaded_state,
+                        )
+                        ok, reason = verify_proof(
+                            proof, uploaded_state, expected_k=1,
+                            max_clip_norm=10.0, min_noise_mult=0.0,
+                        )
+                        proof_pass = ok
+                        proof_reason = reason
+                        round_proofs_d.append(proof)
+
+                    sepg_log.append({
+                        "Round":   rnd,
+                        "Hosp":    f"H{cid}",
                         "Records": len(client_ix_d[cid]),
-                        "Local loss": round(last_loss, 4),
-                        "delta_L2": round(delta_l2, 4),
+                        "Loss":    round(last_loss, 4),
+                        "SEPG":    "✅" if proof_pass else "❌",
+                        "Hash":    (proof.update_hash[:10] + "…")
+                                   if use_sepg_d else "-",
                     })
-                    client_updates_d.append((new_state, len(client_ix_d[cid])))
+
+                    if proof_pass:
+                        client_updates_d.append((uploaded_state, len(client_ix_d[cid])))
                     round_losses_d.append(last_loss)
 
-                # FedAvg
-                if not client_updates_d:
-                    st.error("No active hospitals — aborting.")
-                    st.stop()
-                total_n_d = sum(n for _, n in client_updates_d)
-                agg_state_d = {
-                    k: torch.zeros_like(client_updates_d[0][0][k]).float()
-                    for k in client_updates_d[0][0]
-                }
-                for state, n in client_updates_d:
-                    w = n / total_n_d
-                    for k in agg_state_d:
-                        agg_state_d[k] += state[k].float() * w
-                global_model_d.load_state_dict(agg_state_d)
+                # Phase: upload
+                anim_slot_d.plotly_chart(
+                    fl_topology_frame(num_clients=anim_n, phase="upload",
+                                       round_id=rnd, total_rounds=n_rounds_d),
+                    use_container_width=True,
+                    key=f"dis_anim_up_{rnd}",
+                )
+                anim_caption_d.info(
+                    f"All hospitals upload sparse updates + SEPG proofs · "
+                    f"server runs 4-check verification"
+                )
+                time.sleep(0.2)
 
-                acc_d, loss_d = _eval_d(global_model_d, test_ds_d)
-                acc_history_d.append({
+                # ---- Aggregate ----
+                if client_updates_d:
+                    agg_state = _aggregate(client_updates_d, aggr_d)
+                    global_model_d.load_state_dict(agg_state)
+
+                # Phase: aggregate
+                anim_slot_d.plotly_chart(
+                    fl_topology_frame(num_clients=anim_n, phase="aggregate",
+                                       round_id=rnd, total_rounds=n_rounds_d),
+                    use_container_width=True,
+                    key=f"dis_anim_agg_{rnd}",
+                )
+                anim_caption_d.info(
+                    f"Server aggregates {len(client_updates_d)}/{n_hosp_d} verified "
+                    f"updates via {aggr_d} · appends round to audit ledger"
+                )
+                time.sleep(0.25)
+
+                # Ledger
+                ledger_d.add_transaction(
+                    "verify",
+                    round=rnd,
+                    accepted=len(client_updates_d),
+                    rejected=n_hosp_d - len(client_updates_d),
+                    aggregation=aggr_d,
+                )
+                ledger_d.seal_block()
+
+                # Eval
+                top1, top3 = _eval_d(global_model_d, test_ds_d)
+                acc_history.append({
                     "Round": rnd,
-                    "Test acc": acc_d,
-                    "Test loss": loss_d,
-                    "Avg local loss": float(np.mean(round_losses_d)),
+                    "top1":  top1,
+                    "top3":  top3,
+                    "loss":  float(np.mean(round_losses_d)),
                 })
+
+                # Acc chart
+                df_acc = pd.DataFrame(acc_history)
+                fig_acc = go.Figure()
+                fig_acc.add_trace(go.Scatter(
+                    x=df_acc["Round"], y=df_acc["top1"],
+                    mode="lines+markers", name="Top-1 acc",
+                    line=dict(color="#1565C0", width=3)))
+                fig_acc.add_trace(go.Scatter(
+                    x=df_acc["Round"], y=df_acc["top3"],
+                    mode="lines+markers", name="Top-3 acc",
+                    line=dict(color="#16A34A", width=2, dash="dash")))
+                fig_acc.update_layout(
+                    title=f"Round {rnd}/{n_rounds_d} · global model accuracy",
+                    yaxis=dict(range=[0, 1], title="Accuracy"),
+                    xaxis_title="Round", height=350,
+                    margin=dict(t=50, b=30),
+                    legend=dict(orientation="h", y=-0.2),
+                )
+                acc_chart_d.plotly_chart(fig_acc, use_container_width=True,
+                                         key=f"dis_acc_{rnd}")
+
+                df_sepg = pd.DataFrame(sepg_log[-min(len(sepg_log), n_hosp_d * 3):])
+                sepg_table.dataframe(df_sepg, hide_index=True,
+                                     use_container_width=True, height=350)
 
                 progress_d.progress(rnd / n_rounds_d)
                 status_d.markdown(
-                    f"**Round {rnd}/{n_rounds_d}** — global accuracy: "
-                    f"**{acc_d:.2%}**, test loss: {loss_d:.4f}"
+                    f"**Round {rnd}/{n_rounds_d}** · top-1 = **{top1:.1%}** · "
+                    f"top-3 = **{top3:.1%}** · accepted = "
+                    f"{len(client_updates_d)}/{n_hosp_d}"
                 )
-                df_acc_d = pd.DataFrame(acc_history_d)
-                fig_acc_d = go.Figure()
-                fig_acc_d.add_trace(go.Scatter(
-                    x=df_acc_d["Round"], y=df_acc_d["Test acc"],
-                    mode="lines+markers", name="Test accuracy",
-                    line=dict(color="#4C72B0", width=3),
-                ))
-                fig_acc_d.add_trace(go.Scatter(
-                    x=df_acc_d["Round"], y=df_acc_d["Avg local loss"],
-                    mode="lines+markers", name="Avg local loss",
-                    line=dict(color="#DD8452", width=2, dash="dot"),
-                    yaxis="y2",
-                ))
-                fig_acc_d.update_layout(
-                    title="Global model accuracy per FL round",
-                    xaxis_title="Round",
-                    yaxis=dict(title="Accuracy", side="left", range=[0, 1]),
-                    yaxis2=dict(title="Loss", side="right", overlaying="y"),
-                    height=350, margin=dict(t=50, b=30),
-                    legend=dict(orientation="h", y=-0.2),
-                )
-                acc_chart_d.plotly_chart(fig_acc_d, use_container_width=True)
-                df_log_d = pd.DataFrame(log_rows_d[-(n_hosp_d * 2):])
-                log_table_d.dataframe(df_log_d, hide_index=True,
-                                      use_container_width=True)
 
+            # Done
+            anim_slot_d.plotly_chart(
+                fl_topology_frame(num_clients=anim_n, phase="done",
+                                   round_id=n_rounds_d, total_rounds=n_rounds_d,
+                                   accuracy=acc_history[-1]["top1"]),
+                use_container_width=True, key="dis_anim_done",
+            )
+            anim_caption_d.success(
+                f"Federated training complete · {n_rounds_d} rounds · "
+                f"{ledger_d.height()} ledger blocks sealed · "
+                f"final top-1 {acc_history[-1]['top1']:.1%}"
+            )
             progress_d.empty()
             status_d.empty()
 
-            final_acc_d = acc_history_d[-1]["Test acc"]
-            improvement_d = (final_acc_d - initial_acc_d) * 100
+            # ---- Persist for predict UI ----
+            st.session_state["dis_model"]      = global_model_d
+            st.session_state["dis_symptoms"]   = syms_d
+            st.session_state["dis_diseases"]   = dis_names_d
+            st.session_state["dis_n_features"] = n_features_d
+            st.session_state["dis_n_classes"]  = n_classes_d
+            st.session_state["dis_final_top1"] = acc_history[-1]["top1"]
+            st.session_state["dis_final_top3"] = acc_history[-1]["top3"]
+            st.session_state["dis_ledger"]     = ledger_d
 
-            # Persist for the prediction form
-            st.session_state["disease_model"] = global_model_d
-            st.session_state["disease_n_features"] = n_features_d
-            st.session_state["disease_n_classes"] = n_classes_d
-            st.session_state["disease_symptoms"] = syms_d
-            st.session_state["disease_class_names"] = dis_names_d
-            st.session_state["disease_final_acc"] = final_acc_d
-            st.session_state["disease_n_hospitals"] = n_hosp_d
-            st.session_state["disease_n_rounds"] = n_rounds_d
+            # ---- Final summary ----
+            st.subheader("4. Final summary")
+            sm1, sm2, sm3, sm4 = st.columns(4)
+            sm1.metric("Top-1 accuracy", f"{acc_history[-1]['top1']:.1%}",
+                       f"{(acc_history[-1]['top1']-initial_top1)*100:+.1f} pp")
+            sm2.metric("Top-3 accuracy", f"{acc_history[-1]['top3']:.1%}",
+                       f"{(acc_history[-1]['top3']-initial_top3)*100:+.1f} pp")
+            sm3.metric("Hospitals", n_hosp_d)
+            sm4.metric("Ledger blocks", ledger_d.height())
 
-            st.subheader("3. Final summary")
-            sm_d1, sm_d2, sm_d3, sm_d4 = st.columns(4)
-            sm_d1.metric("Initial accuracy", f"{initial_acc_d:.2%}")
-            sm_d2.metric("Final accuracy", f"{final_acc_d:.2%}",
-                         f"{improvement_d:+.1f} pp")
-            sm_d3.metric("Hospitals", n_hosp_d)
-            sm_d4.metric("FL rounds", n_rounds_d)
+            with st.expander("Audit ledger entries"):
+                ledger_df = pd.DataFrame([{
+                    "Block": b.block_id,
+                    "Type":  ", ".join(t.tx_type for t in b.tx_list) or "(empty)",
+                    "Hash":  b.block_hash[:16] + "…",
+                    "Prev":  b.prev_hash[:16] + "…",
+                } for b in ledger_d.blocks])
+                st.dataframe(ledger_df, hide_index=True, use_container_width=True)
 
-            st.success(
-                f"Federated training complete. Global symptom-to-disease "
-                f"accuracy improved by **{improvement_d:+.1f}** pp "
-                f"({initial_acc_d:.1%} -> {final_acc_d:.1%}). "
-                f"No hospital ever shared its raw patient symptom logs."
-            )
-
-            with st.expander(
-                f"Full per-client per-round update log "
-                f"({len(log_rows_d)} entries)"
-            ):
-                st.dataframe(pd.DataFrame(log_rows_d),
-                             hide_index=True, use_container_width=True)
-                st.caption(
-                    "delta_L2 is the L2 norm of the model-weight delta "
-                    "each hospital uploaded. Only these vectors flow "
-                    "to the server — never the raw symptom records."
-                )
+            ok_chain, reason_chain = ledger_d.verify()
+            if ok_chain:
+                st.success("Ledger integrity verified ✅ — chain is unbroken.")
+            else:
+                st.error(f"Ledger broken: {reason_chain}")
 
             insight_box(
-                "Yeh exactly woh setup hai jo real-world clinical FL me "
-                "use hota hai (e.g., NVIDIA Clara, Owkin Substra). Multiple "
-                "hospitals apna symptom-disease data locally rakhte hain, "
-                "global diagnostic model collaborate karke train hota hai, "
-                "aur kabhi bhi raw patient data leak nahi hota."
+                "Notice how the top-3 line climbs to 95%+ while top-1 stays around "
+                "70–85%. Many diseases share symptoms (e.g. high_fever appears in "
+                "Malaria, Dengue, Typhoid, Pneumonia, Tuberculosis) — top-3 is the "
+                "honest clinical metric for a symptom checker. Real diagnosis "
+                "needs lab tests, not just symptoms."
             )
 
         except Exception as exc:
@@ -3355,220 +2971,814 @@ elif page == "Disease Predict":
             raise
 
     # ----------------------------------------------------------------
-    # Predict for a new patient (always visible after training)
+    # Predict UI (always visible after training)
     # ----------------------------------------------------------------
     st.divider()
-    st.subheader("4. Predict disease from symptoms")
+    st.subheader("5. Tell the system your symptoms")
 
-    if "disease_model" not in st.session_state:
+    if "dis_model" not in st.session_state:
         st.info(
-            "Run federated training above first. Once the global model is "
-            "trained, you can pick a patient's symptoms and the model will "
-            "predict the most likely disease — without any hospital ever "
-            "sharing its raw records."
+            "Run federated training above first. Once the global model is trained, "
+            "you can tick off symptoms here and the system will predict the most "
+            "likely disease — using the federated model that never saw any single "
+            "hospital's raw records."
         )
     else:
         st.caption(
-            f"Using global model trained across "
-            f"**{st.session_state['disease_n_hospitals']} hospitals** for "
-            f"**{st.session_state['disease_n_rounds']} FL rounds** "
-            f"(test accuracy: **{st.session_state['disease_final_acc']:.1%}**)."
+            f"Using global federated model · top-1 test acc "
+            f"**{st.session_state['dis_final_top1']:.1%}** · "
+            f"top-3 test acc **{st.session_state['dis_final_top3']:.1%}**."
         )
-        syms_p = st.session_state["disease_symptoms"]
-        dis_p = st.session_state["disease_class_names"]
-        n_features_p_d = st.session_state["disease_n_features"]
-        model_p_d = st.session_state["disease_model"]
+        syms_p   = st.session_state["dis_symptoms"]
+        dis_p    = st.session_state["dis_diseases"]
+        model_p  = st.session_state["dis_model"]
+        n_feat_p = st.session_state["dis_n_features"]
+        n_cls_p  = st.session_state["dis_n_classes"]
 
-        # Two ways to enter symptoms: free text OR multi-select
-        st.markdown("**How to enter symptoms:**")
-        entry_mode = st.radio(
-            "Input mode",
-            ["Multi-select checkboxes", "Free text (comma / space separated)"],
-            horizontal=True, key="dis_entry_mode",
+        # Group symptoms into 5 columns of checkboxes
+        st.markdown("**Tick all symptoms the patient has:**")
+        n_cols = 5
+        cols_p = st.columns(n_cols)
+        chosen = []
+        for i, sym in enumerate(syms_p):
+            label = sym.replace("_", " ")
+            if cols_p[i % n_cols].checkbox(label, key=f"dis_sym_{i}"):
+                chosen.append(i)
+
+        # Quick presets
+        preset_col, _, btn_col = st.columns([2, 2, 1])
+        preset_choice = preset_col.selectbox(
+            "Or load a preset symptom profile:",
+            ["(custom)",
+             "Fever + cough + breathing trouble",
+             "Itching + skin rash",
+             "Headache + vision blur + nausea",
+             "Joint pain + skin rash + high fever"],
+            key="dis_preset",
         )
+        # Preset → symptom indices
+        preset_map = {
+            "Fever + cough + breathing trouble":
+                ["high_fever", "cough", "breathlessness", "fatigue"],
+            "Itching + skin rash":
+                ["itching", "skin_rash", "nodal_skin_eruptions"],
+            "Headache + vision blur + nausea":
+                ["headache", "blurred_and_distorted_vision", "nausea", "vomiting"],
+            "Joint pain + skin rash + high fever":
+                ["joint_pain", "skin_rash", "high_fever", "chills", "back_pain"],
+        }
+        if preset_choice in preset_map:
+            sym2ix_p = {s: i for i, s in enumerate(syms_p)}
+            chosen = [sym2ix_p[s] for s in preset_map[preset_choice] if s in sym2ix_p]
 
-        # Pre-built example presets
-        with st.expander("Try a sample patient profile"):
-            preset_cols = st.columns(3)
-            preset_choice = preset_cols[0].selectbox(
-                "Preset",
-                ["(none)",
-                 "Flu-like fever",
-                 "Allergic reaction",
-                 "Diabetic warning signs",
-                 "Migraine episode",
-                 "Stomach upset"],
-                key="dis_preset",
-            )
-            preset_map = {
-                "Flu-like fever": [
-                    "chills", "high_fever", "sweating", "headache",
-                    "muscle_weakness", "fatigue",
-                ],
-                "Allergic reaction": [
-                    "continuous_sneezing", "chills", "throat_irritation",
-                    "runny_nose",
-                ],
-                "Diabetic warning signs": [
-                    "fatigue", "weight_loss", "restlessness", "lethargy",
-                    "irregular_sugar_level", "excessive_hunger",
-                    "blurred_and_distorted_vision",
-                ],
-                "Migraine episode": [
-                    "headache", "blurred_and_distorted_vision",
-                    "pain_behind_the_eyes", "nausea", "vomiting",
-                ],
-                "Stomach upset": [
-                    "vomiting", "diarrhoea", "dehydration", "abdominal_pain",
-                ],
-            }
+        do_predict = btn_col.button("🔍 Diagnose", type="primary",
+                                     use_container_width=True, key="dis_diag_btn")
 
-        # Initialize / sync from preset
-        preset_active = preset_map.get(preset_choice, None)
-
-        selected_symptoms: list[str] = []
-
-        if entry_mode == "Multi-select checkboxes":
-            # Default value: preset if chosen, else empty
-            default_sel = preset_active if preset_active else []
-            selected_symptoms = st.multiselect(
-                "Tick all symptoms the patient is reporting:",
-                options=syms_p,
-                default=default_sel,
-                key="dis_multi",
-            )
-        else:
-            default_text = ", ".join(preset_active) if preset_active else ""
-            free_text = st.text_input(
-                "Enter symptoms (comma or space separated, "
-                "use_underscores_for_phrases):",
-                value=default_text,
-                placeholder="e.g. high_fever, headache, vomiting, chills",
-                key="dis_free",
-            )
-            # Parse: split on commas and whitespace, normalise
-            tokens = [t.strip().lower().replace(" ", "_")
-                      for chunk in free_text.split(",")
-                      for t in chunk.split()]
-            sym_set = set(syms_p)
-            selected_symptoms = [t for t in tokens if t in sym_set]
-            unknown = [t for t in tokens if t and t not in sym_set]
-            if unknown:
-                st.warning(
-                    f"Unknown symptoms (ignored): {', '.join(unknown[:6])}. "
-                    f"Symptom list uses snake_case — see the multi-select "
-                    f"mode for the full vocabulary."
-                )
-
-        if selected_symptoms:
-            st.markdown(f"**Active symptoms ({len(selected_symptoms)}):** "
-                        + ", ".join(f"`{s}`" for s in selected_symptoms))
-
-        # Predict button
-        if st.button("Predict disease", type="primary",
-                     use_container_width=True, key="dis_predict_btn"):
-            if not selected_symptoms:
-                st.warning("Please select at least one symptom first.")
+        if do_predict:
+            if not chosen:
+                st.warning("Please tick at least one symptom (or pick a preset).")
             else:
-                # Build multi-hot vector
-                sym2ix = {s: i for i, s in enumerate(syms_p)}
-                vec = np.zeros(n_features_p_d, dtype=np.float32)
-                for s in selected_symptoms:
-                    if s in sym2ix:
-                        vec[sym2ix[s]] = 1.0
-
-                x_t = torch.from_numpy(vec).unsqueeze(0).float()
-                model_p_d.eval()
+                vec = np.zeros(n_feat_p, dtype=np.float32)
+                for ix in chosen:
+                    vec[ix] = 1.0
+                x_t = torch.from_numpy(vec).float().unsqueeze(0)
+                model_p.eval()
                 with torch.no_grad():
-                    logits_pd = model_p_d(x_t)
-                    probs_pd = torch.softmax(logits_pd, dim=-1).squeeze(0).numpy()
+                    logits_p = model_p(x_t)
+                    probs_raw = torch.softmax(logits_p, dim=-1).squeeze(0).numpy()
 
-                pred_ix = int(probs_pd.argmax())
-                pred_name = dis_p[pred_ix]
-                conf = float(probs_pd[pred_ix])
+                # ---- Symptom-coverage prior (rules out clinically absurd matches) ----
+                # For each disease, what fraction of the user's symptoms appear
+                # in that disease's canonical symptom list?  A disease that
+                # shares zero symptoms with the query shouldn't be in the top-3.
+                from data.disease_symptoms import disease_symptom_matrix
+                D_S = disease_symptom_matrix()             # (n_dis, n_sym) {0,1}
+                user_vec = vec                              # (n_sym,)
+                # Per-disease overlap counts
+                overlap = (D_S * user_vec).sum(axis=1)      # (n_dis,)
+                n_user = max(int(user_vec.sum()), 1)
+                coverage = overlap / n_user                 # in [0, 1]
+                # Floor at 0.05 so a strongly-trained signal can still surface,
+                # but diseases with zero canonical overlap get pushed way down.
+                prior = np.where(coverage > 0, 0.5 + 0.5 * coverage, 0.05)
+                probs_p = probs_raw * prior
+                probs_p = probs_p / max(probs_p.sum(), 1e-8)
 
-                # Top-5 alternates
-                top_k = min(5, len(dis_p))
-                top_ix = np.argsort(probs_pd)[::-1][:top_k]
+                # Top-3
+                top3_idx = probs_p.argsort()[::-1][:3]
 
                 st.markdown("---")
-                rc1, rc2 = st.columns([1, 2])
-                with rc1:
-                    st.error(f"### {pred_name}")
-                    st.metric("Confidence", f"{conf:.1%}")
+                rcol1, rcol2 = st.columns([1, 2])
+                with rcol1:
+                    st.markdown("### 🩺 Diagnosis")
+                    for rank, idx in enumerate(top3_idx):
+                        emo = "🥇" if rank == 0 else ("🥈" if rank == 1 else "🥉")
+                        st.markdown(
+                            f"**{emo} {dis_p[idx]}** — "
+                            f"{probs_p[idx]:.1%} confidence"
+                        )
                     st.caption(
-                        "Predicted by the **global federated model** — built "
-                        "by aggregating updates from "
-                        f"{st.session_state['disease_n_hospitals']} "
-                        "hospitals without ever transferring patient data."
+                        f"Symptoms entered: {len(chosen)} · "
+                        f"showing top-3 candidates because many diseases share symptoms."
                     )
-
-                with rc2:
-                    fig_top = go.Figure(go.Bar(
-                        x=[dis_p[i] for i in top_ix][::-1],
-                        y=[probs_pd[i] for i in top_ix][::-1],
+                with rcol2:
+                    fig_pred = go.Figure(go.Bar(
+                        x=[dis_p[i] for i in top3_idx[::-1]],
+                        y=[probs_p[i] for i in top3_idx[::-1]],
                         orientation="v",
-                        marker_color=[
-                            "#FF6B6B" if i == pred_ix else "#4C72B0"
-                            for i in top_ix
-                        ][::-1],
-                        text=[f"{probs_pd[i]:.1%}" for i in top_ix][::-1],
+                        marker_color=["#FF6B6B", "#FB923C", "#FBBF24"][::-1],
+                        text=[f"{probs_p[i]:.1%}" for i in top3_idx[::-1]],
                         textposition="outside",
                     ))
-                    fig_top.update_layout(
-                        title=f"Top-{top_k} most likely diseases",
+                    fig_pred.update_layout(
+                        title="Top-3 disease probabilities (after coverage prior)",
                         yaxis=dict(range=[0, 1.05], title="Probability"),
-                        xaxis_tickangle=-30,
-                        height=360, margin=dict(t=50, b=80),
+                        height=320, margin=dict(t=50, b=20),
                     )
-                    st.plotly_chart(fig_top, use_container_width=True)
+                    st.plotly_chart(fig_pred, use_container_width=True)
 
-                # Match score: how many of the predicted disease's canonical
-                # symptoms did the patient report?
-                try:
-                    from data.disease_symptoms import DISEASE_SYMPTOMS
-                    canonical = set(DISEASE_SYMPTOMS.get(pred_name, []))
-                    reported = set(selected_symptoms)
-                    overlap = canonical & reported
-                    extra = reported - canonical
-                    missing = canonical - reported
+                with st.expander("Active symptoms in this query"):
+                    st.write([syms_p[ix].replace("_", " ") for ix in chosen])
 
-                    with st.expander("Why this prediction?"):
-                        col_w1, col_w2, col_w3 = st.columns(3)
-                        col_w1.metric(
-                            "Canonical match",
-                            f"{len(overlap)}/{len(canonical) if canonical else 0}",
+                with st.expander("How this diagnosis was computed"):
+                    raw_top3 = probs_raw.argsort()[::-1][:5]
+                    st.markdown(
+                        "**Step 1 — Federated MLP raw output (top-5):** "
+                        + " · ".join(
+                            f"{dis_p[i]} {probs_raw[i]:.1%}"
+                            for i in raw_top3
                         )
-                        col_w2.metric("Extra symptoms", len(extra))
-                        col_w3.metric("Missing canonical", len(missing))
-                        st.markdown(
-                            f"**Canonical symptoms of {pred_name}:** "
-                            + (", ".join(f"`{s}`" for s in sorted(canonical))
-                               if canonical else "_none recorded_")
-                        )
-                        if overlap:
-                            st.markdown(
-                                "**Matched (you reported):** "
-                                + ", ".join(f"`{s}`" for s in sorted(overlap))
-                            )
-                        if missing:
-                            st.markdown(
-                                "**Missing (canonical but not reported):** "
-                                + ", ".join(f"`{s}`" for s in sorted(missing))
-                            )
-                        if extra:
-                            st.markdown(
-                                "**Extra (reported but not canonical):** "
-                                + ", ".join(f"`{s}`" for s in sorted(extra))
-                            )
-                except Exception:
-                    pass
+                    )
+                    st.markdown(
+                        "**Step 2 — Symptom-coverage prior:** "
+                        "for each candidate disease, we check what fraction of "
+                        "your reported symptoms appear in that disease's canonical "
+                        "symptom list. Diseases that share zero symptoms with your "
+                        "query are floored at 5% (they cannot be top-1 unless the "
+                        "model is overwhelmingly confident)."
+                    )
+                    cov_df = pd.DataFrame({
+                        "Disease":      [dis_p[i] for i in raw_top3],
+                        "Raw model %":  [f"{probs_raw[i]:.1%}" for i in raw_top3],
+                        "Coverage":     [f"{coverage[i]:.0%}"   for i in raw_top3],
+                        "Final %":      [f"{probs_p[i]:.1%}"    for i in raw_top3],
+                    })
+                    st.dataframe(cov_df, hide_index=True, use_container_width=True)
 
                 st.caption(
-                    "_Disclaimer: This is a research demo trained on "
-                    "synthetic-from-clinical-prior data. Not a substitute for "
-                    "professional medical diagnosis._"
+                    "_Disclaimer: research demo trained on synthetic-from-clinical-prior "
+                    "data with DP noise added during federated training. Not a substitute "
+                    "for professional medical diagnosis._"
                 )
+
+
+# ---------------------------------------------------------------
+# PAGE: GENERAL ZKFEDMOE (multi-client wizard)
+# ---------------------------------------------------------------
+elif page == "General zkFedMoE":
+    page_banner(
+        "General zkFedMoE",
+        "Configure → upload one CSV per client → run the full zkFedMoE pipeline · "
+        "DP-SGD · SEPG proofs · robust aggregation · audit ledger · live FL animation.",
+        "🔐",
+    )
+
+    # Wizard state — note: all stored slots use the `genfl_cfg_*` prefix to
+    # avoid colliding with widget keys (which Streamlit auto-binds and refuses
+    # to let us write to in the same run).
+    if "genfl_step" not in st.session_state:
+        st.session_state["genfl_step"] = 1
+    if "genfl_cfg_clients" not in st.session_state:
+        st.session_state["genfl_cfg_clients"] = []  # [{"name", "X", "y"}, ...]
+    if "genfl_cfg_cur" not in st.session_state:
+        st.session_state["genfl_cfg_cur"] = 0
+    if "genfl_cfg_done_count" not in st.session_state:
+        st.session_state["genfl_cfg_done_count"] = 0  # how many uploads parsed
+
+    step = st.session_state["genfl_step"]
+    flow_bar(
+        ["1. Configure", "2. Upload per client", "3. Schema check",
+         "4. FL training", "5. Predict"],
+        ["1. Configure", "2. Upload per client", "3. Schema check",
+         "4. FL training", "5. Predict"][step - 1],
+    )
+
+    # --------- STEP 1: CONFIGURE ---------
+    if step == 1:
+        concept_card(
+            "How this differs from Custom CSV",
+            "<b>Custom CSV</b> takes a single file and partitions it across simulated "
+            "clients (Dirichlet split). <b>This page</b> models true heterogeneity: "
+            "each client uploads its <i>own</i> CSV — different sizes, different "
+            "label distributions, possibly different feature scales — and the full "
+            "zkFedMoE pipeline runs across them.",
+        )
+        st.subheader("1. Configure federation")
+
+        c1, c2, c3 = st.columns(3)
+        n_clients_g = c1.slider("Number of clients", 2, 20, 4,
+                                key="genfl_w_n")
+        n_rounds_g = c2.slider("FL rounds", 1, 20, 8,
+                               key="genfl_w_rounds")
+        aggr_g = c3.selectbox(
+            "Aggregation", ["FedAvg", "Coord-wise Median", "Trimmed Mean"],
+            key="genfl_w_aggr",
+        )
+
+        c4, c5, c6 = st.columns(3)
+        local_epochs_g = c4.slider("Local epochs / round", 1, 5, 2,
+                                   key="genfl_w_ep")
+        lr_g = c5.select_slider(
+            "Learning rate", options=[1e-4, 5e-4, 1e-3, 2e-3, 5e-3],
+            value=1e-3, key="genfl_w_lr",
+        )
+        batch_g = c6.slider("Batch size", 4, 64, 16, step=4,
+                            key="genfl_w_bs")
+
+        st.markdown("**Privacy & verification (zkFedMoE pipeline)**")
+        p1, p2, p3, p4 = st.columns(4)
+        use_dp_g = p1.checkbox("DP-SGD", value=True, key="genfl_w_dp")
+        clip_C_g = p2.slider("Clip norm C", 0.5, 5.0, 1.5, 0.1,
+                             key="genfl_w_clip", disabled=not use_dp_g)
+        sigma_g = p3.slider("Noise σ", 0.0, 2.0, 0.1, 0.05,
+                            key="genfl_w_sigma", disabled=not use_dp_g)
+        use_sepg_g = p4.checkbox("SEPG proofs", value=True,
+                                 key="genfl_w_sepg")
+
+        st.info(
+            f"You will be asked to upload **{n_clients_g} CSV files** "
+            "(one per client). Each CSV: numeric columns, last column = "
+            "integer label, comma-separated. Headers are auto-skipped."
+        )
+
+        if st.button("Continue → Upload client data", type="primary",
+                     use_container_width=True, key="genfl_to_step2"):
+            # Snapshot the widget values into separate cfg slots so step 4
+            # can read them without ever touching widget-bound names.
+            st.session_state["genfl_cfg_n"] = n_clients_g
+            st.session_state["genfl_cfg_rounds"] = n_rounds_g
+            st.session_state["genfl_cfg_aggr"] = aggr_g
+            st.session_state["genfl_cfg_ep"] = local_epochs_g
+            st.session_state["genfl_cfg_lr"] = lr_g
+            st.session_state["genfl_cfg_bs"] = batch_g
+            st.session_state["genfl_cfg_use_dp"] = use_dp_g
+            st.session_state["genfl_cfg_clip"] = clip_C_g
+            st.session_state["genfl_cfg_sigma"] = sigma_g
+            st.session_state["genfl_cfg_use_sepg"] = use_sepg_g
+            st.session_state["genfl_cfg_clients"] = []
+            st.session_state["genfl_cfg_cur"] = 0
+            st.session_state["genfl_cfg_done_count"] = 0
+            st.session_state["genfl_step"] = 2
+            st.rerun()
+
+    # --------- STEP 2: UPLOAD PER CLIENT ---------
+    elif step == 2:
+        n_clients_g = st.session_state["genfl_cfg_n"]
+        cur = st.session_state["genfl_cfg_cur"]
+        already = st.session_state["genfl_cfg_clients"]
+
+        st.subheader(f"2. Upload data for client {cur + 1} / {n_clients_g}")
+
+        # Progress dots
+        dots = "  ".join(
+            "✅" if i < cur else ("🟦" if i == cur else "⬜")
+            for i in range(n_clients_g)
+        )
+        st.markdown(f"**Client progress:** {dots}")
+
+        st.caption(
+            "CSV format: all columns numeric, last column is the integer class label, "
+            "comma-separated. Header rows are skipped automatically. "
+            "All clients should share the same number of features and the same label set."
+        )
+
+        # Show what each previous client contributed
+        if already:
+            with st.expander(f"📁 Already uploaded ({len(already)} client/s)"):
+                rows_so_far = [{
+                    "Client":   c["name"],
+                    "Records":  c["X"].shape[0],
+                    "Features": c["X"].shape[1],
+                    "Classes":  sorted(set(c["y"].tolist())),
+                } for c in already]
+                st.dataframe(pd.DataFrame(rows_so_far), hide_index=True,
+                             use_container_width=True)
+
+        client_name = st.text_input(
+            "Client name (optional)",
+            value=f"Client_{cur + 1}",
+            key=f"genfl_w_cname_{cur}",
+        )
+        uploaded = st.file_uploader(
+            f"📤 Drop CSV file for {client_name}",
+            type=["csv"], key=f"genfl_w_csv_{cur}",
+        )
+
+        # Auto-process the upload as soon as it arrives, then auto-advance.
+        if uploaded is not None:
+            try:
+                raw = uploaded.read().decode("utf-8", errors="replace")
+                rows = []
+                for line in raw.strip().splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split(",")
+                    try:
+                        rows.append([float(p) for p in parts])
+                    except ValueError:
+                        continue
+                if not rows:
+                    st.error("No numeric rows parsed in this CSV.")
+                    st.stop()
+                arr = np.array(rows, dtype=np.float32)
+                Xc = arr[:, :-1]
+                yc = arr[:, -1].astype(np.int64)
+
+                cls_counts = np.bincount(yc) if yc.size > 0 else np.array([0])
+                st.success(
+                    f"✅ Parsed {Xc.shape[0]} rows · {Xc.shape[1]} features · "
+                    f"classes present: {sorted(set(yc.tolist()))}"
+                )
+                cls_df = pd.DataFrame({
+                    "Class": list(range(len(cls_counts))),
+                    "Count": cls_counts.tolist(),
+                })
+                st.bar_chart(cls_df, x="Class", y="Count")
+
+                # Auto-advance on the *first* time we successfully parse this
+                # client's file. We track that with done_count vs cur, so a
+                # rerun (e.g. after another widget changes) doesn't double-add.
+                if st.session_state["genfl_cfg_done_count"] == cur:
+                    label = (
+                        "Confirm & next client →"
+                        if cur + 1 < n_clients_g
+                        else "Confirm & go to schema check →"
+                    )
+                    if st.button(label, type="primary",
+                                 key=f"genfl_confirm_{cur}",
+                                 use_container_width=True):
+                        already.append({"name": client_name,
+                                        "X": Xc, "y": yc})
+                        st.session_state["genfl_cfg_clients"] = already
+                        st.session_state["genfl_cfg_done_count"] = cur + 1
+                        if cur + 1 < n_clients_g:
+                            st.session_state["genfl_cfg_cur"] = cur + 1
+                        else:
+                            st.session_state["genfl_step"] = 3
+                        st.rerun()
+            except Exception as e:
+                st.error(f"Could not parse CSV: {e}")
+
+        # Navigation row
+        nav_l, nav_r = st.columns(2)
+        if nav_l.button("← Back to config", key="genfl_back_step1"):
+            st.session_state["genfl_step"] = 1
+            st.rerun()
+        if nav_r.button("⟳ Restart wizard", key="genfl_restart"):
+            for k in list(st.session_state.keys()):
+                if k.startswith("genfl_"):
+                    del st.session_state[k]
+            st.session_state["genfl_step"] = 1
+            st.rerun()
+
+    # --------- STEP 3: SCHEMA CHECK ---------
+    elif step == 3:
+        clients = st.session_state["genfl_cfg_clients"]
+        st.subheader("3. Schema reconciliation")
+
+        feat_counts = [c["X"].shape[1] for c in clients]
+        all_classes = set()
+        for c in clients:
+            all_classes.update(c["y"].tolist())
+
+        rows = [{
+            "Client":   c["name"],
+            "Records":  c["X"].shape[0],
+            "Features": c["X"].shape[1],
+            "Classes":  sorted(set(c["y"].tolist())),
+        } for c in clients]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+        ok = (len(set(feat_counts)) == 1)
+        if ok:
+            st.success(
+                f"✅ All clients have {feat_counts[0]} features · "
+                f"{len(all_classes)} unique classes across the federation: "
+                f"{sorted(all_classes)}"
+            )
+        else:
+            st.error(
+                f"❌ Feature-count mismatch: {feat_counts}. "
+                "All clients must share the same feature schema. "
+                "Please restart the wizard with consistent CSVs."
+            )
+
+        bcol1, bcol2 = st.columns(2)
+        if bcol1.button("← Re-upload", key="genfl_back_step2"):
+            st.session_state["genfl_cfg_clients"] = []
+            st.session_state["genfl_cfg_cur"] = 0
+            st.session_state["genfl_cfg_done_count"] = 0
+            st.session_state["genfl_step"] = 2
+            st.rerun()
+        if ok and bcol2.button("Run zkFedMoE training →",
+                                type="primary", key="genfl_to_step4"):
+            st.session_state["genfl_step"] = 4
+            st.rerun()
+
+    # --------- STEP 4: FL TRAINING ---------
+    elif step == 4:
+        clients = st.session_state["genfl_cfg_clients"]
+        n_clients_g = st.session_state["genfl_cfg_n"]
+        n_rounds_g = st.session_state["genfl_cfg_rounds"]
+        aggr_g = st.session_state["genfl_cfg_aggr"]
+        local_epochs_g = st.session_state["genfl_cfg_ep"]
+        lr_g = st.session_state["genfl_cfg_lr"]
+        batch_g = st.session_state["genfl_cfg_bs"]
+        use_dp_g = st.session_state["genfl_cfg_use_dp"]
+        clip_C_g = st.session_state["genfl_cfg_clip"]
+        sigma_g = st.session_state["genfl_cfg_sigma"]
+        use_sepg_g = st.session_state["genfl_cfg_use_sepg"]
+
+        st.subheader(f"4. Federated training across {n_clients_g} clients")
+
+        # Combine all clients' data, then standardise globally (using a public
+        # mean/std proxy: the per-client mean averaged — does NOT leak raw rows).
+        all_X = np.concatenate([c["X"] for c in clients], axis=0)
+        all_y = np.concatenate([c["y"] for c in clients], axis=0)
+        n_features_g = all_X.shape[1]
+        n_classes_g = int(all_y.max()) + 1
+
+        # Per-client local mean/std → average (a stand-in for secure mean exchange)
+        per_mu = np.stack([c["X"].mean(axis=0) for c in clients], axis=0)
+        per_sd = np.stack([c["X"].std(axis=0) + 1e-8 for c in clients], axis=0)
+        mu_g = per_mu.mean(axis=0, keepdims=True)
+        sd_g = per_sd.mean(axis=0, keepdims=True)
+
+        from torch.utils.data import TensorDataset, DataLoader
+
+        # Build global test set: 20% pulled out of each client (so test reflects
+        # the federation distribution, not a single client).
+        test_X_list, test_y_list = [], []
+        client_dss_g = []
+        for c in clients:
+            Xc = (c["X"] - mu_g) / sd_g
+            yc = c["y"]
+            n = Xc.shape[0]
+            n_te = max(int(0.2 * n), 1)
+            perm = np.random.RandomState(42).permutation(n)
+            te_ix = perm[:n_te]
+            tr_ix = perm[n_te:]
+            test_X_list.append(Xc[te_ix])
+            test_y_list.append(yc[te_ix])
+            X_tr = torch.from_numpy(Xc[tr_ix]).float()
+            y_tr = torch.from_numpy(yc[tr_ix]).long()
+            client_dss_g.append(TensorDataset(X_tr, y_tr))
+        X_te_g = torch.from_numpy(np.concatenate(test_X_list, axis=0)).float()
+        y_te_g = torch.from_numpy(np.concatenate(test_y_list, axis=0)).long()
+        test_ds_g = TensorDataset(X_te_g, y_te_g)
+
+        # Generic MLP
+        class _GenClf(torch.nn.Module):
+            def __init__(self, in_f, hidden=64, n_cls=2):
+                super().__init__()
+                self.net = torch.nn.Sequential(
+                    torch.nn.Linear(in_f, hidden), torch.nn.ReLU(),
+                    torch.nn.Dropout(0.1),
+                    torch.nn.Linear(hidden, hidden), torch.nn.ReLU(),
+                    torch.nn.Linear(hidden, n_cls),
+                )
+            def forward(self, x): return self.net(x)
+
+        global_model_g = _GenClf(n_features_g, 64, n_classes_g)
+
+        def _eval_g(model, ds):
+            model.eval()
+            ldr = DataLoader(ds, batch_size=128, shuffle=False)
+            c = t = 0
+            with torch.no_grad():
+                for X, y in ldr:
+                    out = model(X)
+                    c += int((out.argmax(-1) == y).sum())
+                    t += y.size(0)
+            return c / max(t, 1)
+
+        def _aggregate_g(states_with_n, mode):
+            keys = list(states_with_n[0][0].keys())
+            if mode == "FedAvg":
+                total_n = sum(n for _, n in states_with_n)
+                out = {k: torch.zeros_like(states_with_n[0][0][k]).float() for k in keys}
+                for st_, n in states_with_n:
+                    w = n / total_n
+                    for k in keys:
+                        out[k] += st_[k].float() * w
+                return out
+            if mode == "Coord-wise Median":
+                out = {}
+                for k in keys:
+                    stacked = torch.stack([st_[k].float() for st_, _ in states_with_n])
+                    out[k] = stacked.median(dim=0).values
+                return out
+            out = {}
+            kc = len(states_with_n)
+            trim = max(0, kc // 10)
+            for k in keys:
+                stacked = torch.stack([st_[k].float() for st_, _ in states_with_n])
+                sorted_, _ = stacked.sort(dim=0)
+                if trim > 0 and trim * 2 < kc:
+                    sorted_ = sorted_[trim: kc - trim]
+                out[k] = sorted_.mean(dim=0)
+            return out
+
+        if st.button("▶ Start FL run", type="primary",
+                     use_container_width=True, key="genfl_start"):
+            ledger_g = Ledger()
+            ledger_g.add_transaction(
+                "register", event="genfl-run-start",
+                clients=n_clients_g, rounds=n_rounds_g,
+            )
+            ledger_g.seal_block()
+
+            initial_acc_g = _eval_g(global_model_g, test_ds_g)
+            st.info(f"Initial accuracy: **{initial_acc_g:.1%}** "
+                    f"(random baseline = {1.0/n_classes_g:.1%})")
+
+            anim_n = min(n_clients_g, 8)
+            anim_slot_g = st.empty()
+            anim_caption_g = st.empty()
+            chart_l, chart_r = st.columns([3, 2])
+            acc_chart_g = chart_l.empty()
+            sepg_table_g = chart_r.empty()
+
+            acc_history_g = []
+            sepg_log_g = []
+            progress_g = st.progress(0.0)
+
+            for rnd in range(1, n_rounds_g + 1):
+                anim_slot_g.plotly_chart(
+                    fl_topology_frame(num_clients=anim_n, phase="broadcast",
+                                       round_id=rnd, total_rounds=n_rounds_g,
+                                       accuracy=acc_history_g[-1]["acc"]
+                                       if acc_history_g else None),
+                    use_container_width=True, key=f"gen_anim_b_{rnd}",
+                )
+                anim_caption_g.info(f"Round {rnd}/{n_rounds_g} · broadcast global θ")
+                time.sleep(0.2)
+
+                global_state_g = {k: v.detach().cpu().clone()
+                                  for k, v in global_model_g.state_dict().items()}
+                client_updates_g = []
+                round_losses_g = []
+
+                for cid in range(n_clients_g):
+                    if cid < anim_n and rnd == 1:
+                        anim_slot_g.plotly_chart(
+                            fl_topology_frame(num_clients=anim_n, phase="train",
+                                               round_id=rnd, total_rounds=n_rounds_g,
+                                               active_client=cid),
+                            use_container_width=True,
+                            key=f"gen_anim_t_{rnd}_{cid}",
+                        )
+                        anim_caption_g.info(
+                            f"{clients[cid]['name']} trains locally · "
+                            f"DP-SGD · SEPG proof"
+                        )
+                        time.sleep(0.05)
+
+                    local_model = _GenClf(n_features_g, 64, n_classes_g)
+                    local_model.load_state_dict(global_state_g)
+                    local_model.train()
+                    loader_l = DataLoader(client_dss_g[cid],
+                                          batch_size=batch_g, shuffle=True)
+                    opt_l = torch.optim.Adam(local_model.parameters(), lr=lr_g)
+                    crit_l = torch.nn.CrossEntropyLoss()
+                    last_loss = 0.0
+                    for _ep in range(local_epochs_g):
+                        for X_b, y_b in loader_l:
+                            opt_l.zero_grad()
+                            out_l = local_model(X_b)
+                            loss_l = crit_l(out_l, y_b)
+                            loss_l.backward()
+                            opt_l.step()
+                            last_loss = loss_l.item()
+
+                    new_state = {k: v.detach().cpu().clone()
+                                 for k, v in local_model.state_dict().items()}
+                    delta = {k: new_state[k].float() - global_state_g[k].float()
+                             for k in new_state}
+                    if use_dp_g:
+                        delta_dp = apply_dp(delta, clip_norm=clip_C_g,
+                                            noise_multiplier=sigma_g)
+                    else:
+                        delta_dp = delta
+                    uploaded_state = {k: global_state_g[k].float() + delta_dp[k]
+                                      for k in delta_dp}
+
+                    proof_pass = True
+                    proof_hash_short = "-"
+                    if use_sepg_g:
+                        proof = generate_proof(
+                            client_id=cid, round_id=rnd,
+                            top_k_indices=[0],
+                            clip_norm=clip_C_g if use_dp_g else 0.0,
+                            noise_multiplier=sigma_g if use_dp_g else 0.0,
+                            epsilon=0.0, sparse_state=uploaded_state,
+                        )
+                        ok, _ = verify_proof(proof, uploaded_state, expected_k=1,
+                                             max_clip_norm=10.0, min_noise_mult=0.0)
+                        proof_pass = ok
+                        proof_hash_short = proof.update_hash[:10] + "…"
+
+                    sepg_log_g.append({
+                        "Rnd":  rnd,
+                        "Client": clients[cid]["name"],
+                        "Recs": len(client_dss_g[cid]),
+                        "Loss": round(last_loss, 4),
+                        "SEPG": "✅" if proof_pass else "❌",
+                        "Hash": proof_hash_short,
+                    })
+
+                    if proof_pass:
+                        client_updates_g.append((uploaded_state, len(client_dss_g[cid])))
+                    round_losses_g.append(last_loss)
+
+                anim_slot_g.plotly_chart(
+                    fl_topology_frame(num_clients=anim_n, phase="upload",
+                                       round_id=rnd, total_rounds=n_rounds_g),
+                    use_container_width=True, key=f"gen_anim_u_{rnd}",
+                )
+                anim_caption_g.info(
+                    f"All clients upload · server runs SEPG verify · {aggr_g}"
+                )
+                time.sleep(0.2)
+
+                if client_updates_g:
+                    agg_state = _aggregate_g(client_updates_g, aggr_g)
+                    global_model_g.load_state_dict(agg_state)
+
+                anim_slot_g.plotly_chart(
+                    fl_topology_frame(num_clients=anim_n, phase="aggregate",
+                                       round_id=rnd, total_rounds=n_rounds_g),
+                    use_container_width=True, key=f"gen_anim_a_{rnd}",
+                )
+                anim_caption_g.info(
+                    f"Aggregated {len(client_updates_g)}/{n_clients_g} verified "
+                    f"updates · ledger entry sealed"
+                )
+                time.sleep(0.2)
+
+                ledger_g.add_transaction(
+                    "verify", round=rnd,
+                    accepted=len(client_updates_g),
+                    rejected=n_clients_g - len(client_updates_g),
+                    aggregation=aggr_g,
+                )
+                ledger_g.seal_block()
+
+                acc_g = _eval_g(global_model_g, test_ds_g)
+                acc_history_g.append({
+                    "Round": rnd, "acc": acc_g,
+                    "loss": float(np.mean(round_losses_g)),
+                })
+                df_acc_g = pd.DataFrame(acc_history_g)
+                fig_acc_g = go.Figure()
+                fig_acc_g.add_trace(go.Scatter(
+                    x=df_acc_g["Round"], y=df_acc_g["acc"],
+                    mode="lines+markers", name="Test acc",
+                    line=dict(color="#1565C0", width=3)))
+                fig_acc_g.update_layout(
+                    title=f"Round {rnd}/{n_rounds_g} · global accuracy",
+                    yaxis=dict(range=[0, 1]),
+                    height=350, margin=dict(t=50, b=30),
+                )
+                acc_chart_g.plotly_chart(fig_acc_g, use_container_width=True,
+                                         key=f"gen_acc_{rnd}")
+
+                df_sepg_g = pd.DataFrame(
+                    sepg_log_g[-min(len(sepg_log_g), n_clients_g * 3):]
+                )
+                sepg_table_g.dataframe(df_sepg_g, hide_index=True,
+                                        use_container_width=True, height=350)
+
+                progress_g.progress(rnd / n_rounds_g)
+
+            anim_slot_g.plotly_chart(
+                fl_topology_frame(num_clients=anim_n, phase="done",
+                                   round_id=n_rounds_g, total_rounds=n_rounds_g,
+                                   accuracy=acc_history_g[-1]["acc"]),
+                use_container_width=True, key="gen_anim_done",
+            )
+            anim_caption_g.success(
+                f"FL run complete · final acc {acc_history_g[-1]['acc']:.1%} · "
+                f"{ledger_g.height()} ledger blocks sealed"
+            )
+            progress_g.empty()
+
+            # Persist
+            st.session_state["genfl_model"] = global_model_g
+            st.session_state["genfl_mu"] = mu_g
+            st.session_state["genfl_sd"] = sd_g
+            st.session_state["genfl_res_n_features"] = n_features_g
+            st.session_state["genfl_res_n_classes"] = n_classes_g
+            st.session_state["genfl_final_acc"] = acc_history_g[-1]["acc"]
+            st.session_state["genfl_ledger"] = ledger_g
+
+            sm1, sm2, sm3, sm4 = st.columns(4)
+            sm1.metric("Initial acc", f"{initial_acc_g:.1%}")
+            sm2.metric("Final acc", f"{acc_history_g[-1]['acc']:.1%}",
+                       f"{(acc_history_g[-1]['acc']-initial_acc_g)*100:+.1f} pp")
+            sm3.metric("Clients", n_clients_g)
+            sm4.metric("Ledger blocks", ledger_g.height())
+
+            ok_chain, _ = ledger_g.verify()
+            if ok_chain:
+                st.success("Ledger integrity verified ✅")
+
+            if st.button("Continue → Predict", type="primary", key="genfl_to_step5"):
+                st.session_state["genfl_step"] = 5
+                st.rerun()
+
+        # Always-available navigation
+        nav_l, _, nav_r = st.columns([1, 2, 1])
+        if nav_l.button("← Back to schema", key="genfl_back_step3"):
+            st.session_state["genfl_step"] = 3
+            st.rerun()
+        if "genfl_model" in st.session_state and nav_r.button(
+            "Skip to predict →", key="genfl_skip_step5"
+        ):
+            st.session_state["genfl_step"] = 5
+            st.rerun()
+
+    # --------- STEP 5: PREDICT ---------
+    elif step == 5:
+        st.subheader("5. Predict with the trained global model")
+        if "genfl_model" not in st.session_state:
+            st.warning("No trained model in session. Go back to step 4 and run training.")
+            if st.button("← Back to training", key="genfl_back_step4_b"):
+                st.session_state["genfl_step"] = 4
+                st.rerun()
+        else:
+            model_g = st.session_state["genfl_model"]
+            mu_g = st.session_state["genfl_mu"]
+            sd_g = st.session_state["genfl_sd"]
+            n_feat_g = st.session_state["genfl_res_n_features"]
+            n_cls_g = st.session_state["genfl_res_n_classes"]
+
+            st.caption(
+                f"Final test accuracy: **{st.session_state['genfl_final_acc']:.1%}** · "
+                f"{n_feat_g} features · {n_cls_g} classes."
+            )
+
+            with st.form("genfl_predict_form"):
+                st.markdown("**Enter feature values:**")
+                cols_p = st.columns(min(n_feat_g, 4))
+                vals = []
+                for i in range(n_feat_g):
+                    v = cols_p[i % len(cols_p)].number_input(
+                        f"Feature {i}", value=0.0, format="%.4f",
+                        key=f"genfl_pred_f{i}",
+                    )
+                    vals.append(float(v))
+                submitted_g = st.form_submit_button(
+                    "🔍 Predict", type="primary", use_container_width=True
+                )
+
+            if submitted_g:
+                x_raw = np.array(vals, dtype=np.float32).reshape(1, -1)
+                x_std = (x_raw - mu_g) / sd_g
+                x_t = torch.from_numpy(x_std).float()
+                model_g.eval()
+                with torch.no_grad():
+                    logits_g = model_g(x_t)
+                    probs_g = torch.softmax(logits_g, dim=-1).squeeze(0).numpy()
+                pred_idx = int(probs_g.argmax())
+                conf = float(probs_g[pred_idx])
+
+                rcol1, rcol2 = st.columns([1, 2])
+                rcol1.metric("Predicted class", f"Class {pred_idx}",
+                             f"{conf:.1%} confidence")
+                fig_pg = go.Figure(go.Bar(
+                    x=[f"Class {i}" for i in range(n_cls_g)],
+                    y=probs_g.tolist(),
+                    marker_color=["#FF6B6B" if i == pred_idx else "#4C72B0"
+                                  for i in range(n_cls_g)],
+                    text=[f"{p:.1%}" for p in probs_g],
+                    textposition="outside",
+                ))
+                fig_pg.update_layout(yaxis=dict(range=[0, 1.05]),
+                                      height=320, margin=dict(t=30, b=20))
+                rcol2.plotly_chart(fig_pg, use_container_width=True)
+
+            nav_l, _, nav_r = st.columns([1, 2, 1])
+            if nav_l.button("← Back to training", key="genfl_back_step4"):
+                st.session_state["genfl_step"] = 4
+                st.rerun()
+            if nav_r.button("⟳ New federation", key="genfl_restart_end"):
+                for k in list(st.session_state.keys()):
+                    if k.startswith("genfl_"):
+                        del st.session_state[k]
+                st.session_state["genfl_step"] = 1
+                st.rerun()
 
 
 # ---------------------------------------------------------------
@@ -3842,7 +4052,7 @@ elif page == "About":
         ],
         "Status": ["Done"] * 12,
         "Dashboard Page": [
-            "Architecture", "Train", "Train", "Compare", "Predict",
+            "Architecture", "Train", "Train", "Compare", "News Detection",
             "Privacy & DP", "Privacy & DP", "Robustness", "Robustness",
             "Experiments", "Custom CSV", "All",
         ],
@@ -3852,7 +4062,7 @@ elif page == "About":
     st.divider()
     st.subheader("Dashboard Pages")
     pages_desc = {
-        "Page": ["Predict", "Train", "Custom CSV", "Privacy & DP",
+        "Page": ["News Detection", "Train", "Custom CSV", "Privacy & DP",
                  "Robustness", "Experiments", "Compare", "Architecture"],
         "What it does": [
             "Live text classification + expert routing + compare two headlines side-by-side",

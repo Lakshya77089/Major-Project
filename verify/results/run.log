@@ -1,0 +1,140 @@
+Traceback (most recent call last):
+  File "D:\projects\Major Project\verify\run_verification.py", line 983, in main
+    result = fn()
+  File "D:\projects\Major Project\verify\run_verification.py", line 281, in exp1_privacy_utility
+    print("\n  Paper says (Table I uses '\u03b5 (Rényi)'):")
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.10_3.10.3056.0_x64__qbz5n2kfra8p0\lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+UnicodeEncodeError: 'charmap' codec can't encode character '\u03b5' in position 30: character maps to <undefined>
+
+==============================================================================
+  EXPERIMENT 1: Privacy-Utility Tradeoff (Table I)
+==============================================================================
+  Reference: 5 clients, 5 rounds, AG News, MoE(E=8,K=2), seed=42
+  sigma=0.0  eps_basic=     inf  eps_renyi=     inf  acc=74.99%  wall=91.4s
+  sigma=0.1  eps_basic=  0.2889  eps_renyi=250.3958  acc=25.00%  wall=116.0s
+  sigma=0.5  eps_basic=  0.0578  eps_renyi=  3.0601  acc=25.00%  wall=113.5s
+  sigma=1.0  eps_basic=  0.0289  eps_renyi=  0.7745  acc=25.00%  wall=233.0s
+  sigma=2.0  eps_basic=  0.0144  eps_renyi=  0.1844  acc=25.00%  wall=337.2s
+
+  [ERROR] exp1 failed: 'charmap' codec can't encode character '\u03b5' in position 30: character maps to <undefined>
+
+==============================================================================
+  EXPERIMENT 2: Communication Savings vs Top-K (Table II)
+==============================================================================
+  Reference: 5 clients, 5 rounds, E=8 experts, sweep K=1..8
+  K=1  acc=56.16%  saving=39.52%  wall=158.3s
+  K=2  acc=57.59%  saving=33.88%  wall=149.6s
+  K=3  acc=57.25%  saving=28.23%  wall=171.6s
+  K=4  acc=74.42%  saving=22.58%  wall=249.6s
+  K=5  acc=54.38%  saving=16.94%  wall=324.2s
+  K=6  acc=57.13%  saving=11.29%  wall=449.2s
+  K=7  acc=58.51%  saving= 5.65%  wall=415.0s
+  K=8  acc=70.51%  saving= 0.00%  wall=379.2s
+
+  Compared to paper:
+  [MATCH]    K=1 accuracy: paper=54.24% | measured=56.16% 
+  [MATCH]    K=1 saving: paper=39.52% | measured=39.52% 
+  [MISMATCH] K=2 accuracy: paper=54.96% | measured=57.59% 
+  [MATCH]    K=2 saving: paper=33.88% | measured=33.88% 
+  [MATCH]    K=3 accuracy: paper=57.66% | measured=57.25% 
+  [MATCH]    K=3 saving: paper=28.23% | measured=28.23% 
+  [MISMATCH] K=4 accuracy: paper=59.09% | measured=74.42% 
+  [MATCH]    K=4 saving: paper=22.58% | measured=22.58% 
+  [MISMATCH] K=8 accuracy: paper=55.99% | measured=70.51% 
+  [MATCH]    K=8 saving: paper=0.00% | measured=0.00% 
+
+  --> Saved partial results to D:\projects\Major Project\verify\results\measured.json
+
+==============================================================================
+  EXPERIMENT 4: Robustness Under Poisoning (Table IV)
+==============================================================================
+  Reference: 5 clients, 5 rounds, label-flip poisoning, 0/20/40% malicious
+  FedAvg         mal= 0%  acc=56.91%  n_mal=0  wall=179.1s
+  FedAvg         mal=20%  acc=57.42%  n_mal=1  wall=224.7s
+  FedAvg         mal=40%  acc=45.97%  n_mal=2  wall=235.8s
+  Median         mal= 0%  acc=57.68%  n_mal=0  wall=235.8s
+  Median         mal=20%  acc=60.88%  n_mal=1  wall=214.1s
+  Median         mal=40%  acc=25.00%  n_mal=2  wall=233.9s
+  Trimmed Mean   mal= 0%  acc=57.45%  n_mal=0  wall=189.0s
+  Trimmed Mean   mal=20%  acc=61.05%  n_mal=1  wall=238.5s
+  Trimmed Mean   mal=40%  acc=46.51%  n_mal=2  wall=245.5s
+
+  Compared to paper at 40% malicious:
+  [MISMATCH] FedAvg @ 40% mal: paper=41.82% | measured=45.97% (within 3 pp)
+  [MISMATCH] Median @ 40% mal: paper=45.95% | measured=25.00% (within 3 pp)
+  [MATCH]    Trimmed Mean @ 40% mal: paper=43.95% | measured=46.51% (within 3 pp)
+
+  --> Saved partial results to D:\projects\Major Project\verify\results\measured.json
+
+==============================================================================
+  EXPERIMENT 5: Non-IID Dirichlet alpha sweep (Table V)
+==============================================================================
+  Reference: 5 clients, 3 rounds, AG News, sweep alpha
+  alpha=   0.1  acc=53.57%  clients[0]=[2354, 546, 880, 1196]  wall=131.0s
+  alpha=   0.3  acc=36.82%  clients[0]=[3394, 1337, 7489, 328]  wall=143.5s
+  alpha=   0.5  acc=27.20%  clients[0]=[4359, 7297, 6040, 3884]  wall=137.4s
+  alpha=   1.0  acc=42.80%  clients[0]=[4108, 20142, 845, 1811]  wall=95.9s
+  alpha=   5.0  acc=52.46%  clients[0]=[5582, 6860, 8326, 4775]  wall=92.6s
+  alpha= 100.0  acc=25.00%  clients[0]=[5914, 6195, 6519, 5771]  wall=97.0s
+
+  Compared to paper:
+  [MISMATCH] alpha=0.1: paper=43-48% | measured=53.57% (within 5pp slack)
+  [MISMATCH] alpha=0.5: paper=50-54% | measured=27.20% (within 5pp slack)
+  [MISMATCH] alpha=100: paper=57-58% | measured=25.00% (within 5pp slack)
+
+  --> Saved partial results to D:\projects\Major Project\verify\results\measured.json
+
+==============================================================================
+  EXPERIMENT 6: Membership Inference Attack (Table VI)
+==============================================================================
+  Reference: 3 rounds, members = first 2 clients, MIA AUC
+  No DP           acc=25.00%  AUC=0.536  attack_acc=54.3%  mem_loss=1.973  nonmem_loss=2.105
+  DP sigma=0.1    acc=25.00%  AUC=0.501  attack_acc=52.7%  mem_loss=1.386  nonmem_loss=1.386
+  DP sigma=0.5    acc=25.00%  AUC=0.518  attack_acc=54.0%  mem_loss=1.505  nonmem_loss=1.526
+  DP sigma=1.0    acc=25.00%  AUC=0.509  attack_acc=52.7%  mem_loss=21.451  nonmem_loss=22.355
+
+  Compared to paper:
+  [MISMATCH] No DP MIA AUC: paper=0.643 | measured=0.536 (within ±0.10)
+  [MATCH]    sigma=1.0 MIA AUC: paper=0.51 | measured=0.509 (within ±0.10)
+
+  --> Saved partial results to D:\projects\Major Project\verify\results\measured.json
+
+==============================================================================
+  EXPERIMENT 7: FedProx vs FedAvg under Dirichlet alpha=0.3 (Table VII)
+==============================================================================
+  Reference: 5 clients, 3 rounds, alpha=0.3, mu sweep
+  FedAvg              alpha=0.3  acc=36.82%  wall=87.8s
+  FedProx mu=0.001    alpha=0.3  acc=25.05%  wall=177.3s
+  FedProx mu=0.01     alpha=0.3  acc=24.97%  wall=166.9s
+  FedProx mu=0.1      alpha=0.3  acc=25.00%  wall=190.6s
+  FedProx mu=0.5      alpha=0.3  acc=25.00%  wall=181.0s
+
+  Compared to paper:
+  [MISMATCH] FedAvg @ alpha=0.3: paper=48-52% | measured=36.82% (within 5pp slack)
+  [MISMATCH] FedProx sweet (mu=0.1): paper=49-54% | measured=25.00% (within 5pp slack)
+
+  --> Saved partial results to D:\projects\Major Project\verify\results\measured.json
+
+==============================================================================
+  EXPERIMENT 8: Disease Detection (Table VIII-A)
+==============================================================================
+  Reference: 24 diseases x 70 symptoms, 10 hospitals, 10 rounds, sigma sweep
+  Dataset: 1920 records (1536 train / 384 test) x 70 symptoms x 24 diseases
+  sigma=0.00  top1=85.68%  top3=95.31%  wall=5.6s
+  sigma=0.05  top1=83.59%  top3=93.23%  wall=6.3s
+  sigma=0.10  top1=73.18%  top3=88.54%  wall=6.2s
+  sigma=0.20  top1=32.55%  top3=55.73%  wall=6.3s
+
+  Compared to paper:
+  [MISMATCH] sigma=0.10 top-1: paper=82.8% | measured=73.18% (within ±5 pp)
+  [MATCH]    sigma=0.10 top-3: paper=92.4% | measured=88.54% (within ±5 pp)
+  [MATCH]    sigma=0.00 top-1: paper=87.5% | measured=85.68% (within ±5 pp)
+  [MATCH]    sigma=0.00 top-3: paper=95.1% | measured=95.31% (within ±5 pp)
+
+  --> Saved partial results to D:\projects\Major Project\verify\results\measured.json
+
+==============================================================================
+  All requested experiments complete in 7170.4s (119.5 min)
+==============================================================================
+  Results: D:\projects\Major Project\verify\results\measured.json

@@ -1,0 +1,110 @@
+{
+  "exp7_v3": {
+    "rows": [
+      {
+        "mu": 0.0,
+        "label": "FedAvg",
+        "alpha": 0.3,
+        "accuracy_pct": 74.88,
+        "wall_seconds": 182.3,
+        "normalised": false
+      },
+      {
+        "mu": 0.01,
+        "label": "FedProx-norm mu=0.01",
+        "alpha": 0.3,
+        "accuracy_pct": 71.71,
+        "wall_seconds": 303.7,
+        "normalised": true
+      },
+      {
+        "mu": 0.1,
+        "label": "FedProx-norm mu=0.1",
+        "alpha": 0.3,
+        "accuracy_pct": 70.43,
+        "wall_seconds": 294.1,
+        "normalised": true
+      },
+      {
+        "mu": 1.0,
+        "label": "FedProx-norm mu=1.0",
+        "alpha": 0.3,
+        "accuracy_pct": 61.22,
+        "wall_seconds": 290.2,
+        "normalised": true
+      },
+      {
+        "mu": 10.0,
+        "label": "FedProx-norm mu=10.0",
+        "alpha": 0.3,
+        "accuracy_pct": 61.99,
+        "wall_seconds": 291.7,
+        "normalised": true
+      },
+      {
+        "mu": 100.0,
+        "label": "FedProx-norm mu=100.0",
+        "alpha": 0.3,
+        "accuracy_pct": 56.51,
+        "wall_seconds": 294.5,
+        "normalised": true
+      },
+      {
+        "mu": 1000.0,
+        "label": "FedProx-norm mu=1000.0",
+        "alpha": 0.3,
+        "accuracy_pct": 27.46,
+        "wall_seconds": 278.7,
+        "normalised": true
+      }
+    ],
+    "alpha": 0.3,
+    "rounds": 8,
+    "note": "FedProx with proximal term divided by N_params"
+  },
+  "exp8b_v1": {
+    "rows": [
+      {
+        "symptom": "cough",
+        "without_aug": {
+          "top1": "GERD",
+          "prob": 20.07
+        },
+        "with_aug": {
+          "top1": "Pneumonia",
+          "prob": 28.61
+        }
+      },
+      {
+        "symptom": "itching",
+        "without_aug": {
+          "top1": "Fungal infection",
+          "prob": 33.56
+        },
+        "with_aug": {
+          "top1": "Fungal infection",
+          "prob": 15.67
+        }
+      },
+      {
+        "symptom": "headache",
+        "without_aug": {
+          "top1": "Migraine",
+          "prob": 15.17
+        },
+        "with_aug": {
+          "top1": "Malaria",
+          "prob": 21.37
+        }
+      }
+    ],
+    "rounds": 10,
+    "n_hospitals": 10,
+    "test_symptoms": [
+      "cough",
+      "itching",
+      "headache"
+    ],
+    "note": "sparse_subset_prob controls fraction of training rows that are 1-3-symptom presentations; the rescue is the claim that adding such rows fixes the OOD failure on single-symptom queries."
+  }
+}

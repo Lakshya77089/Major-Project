@@ -1,0 +1,34 @@
+
+==============================================================================
+  EXPERIMENT 7 v3: FedProx (NORMALISED prox, alpha=0.3, 8 rounds)
+==============================================================================
+  Tests whether parameter-count-normalised FedProx recovers
+  the positive result on a 600K-param MoE.
+  FedAvg                     alpha=0.3  acc=74.88%  wall=182s
+  FedProx-norm mu=0.01       alpha=0.3  acc=71.71%  wall=304s
+  FedProx-norm mu=0.1        alpha=0.3  acc=70.43%  wall=294s
+  FedProx-norm mu=1.0        alpha=0.3  acc=61.22%  wall=290s
+  FedProx-norm mu=10.0       alpha=0.3  acc=61.99%  wall=292s
+  FedProx-norm mu=100.0      alpha=0.3  acc=56.51%  wall=295s
+  FedProx-norm mu=1000.0     alpha=0.3  acc=27.46%  wall=279s
+  [CHECKPOINT v3] Saved exp7_v3
+
+==============================================================================
+  EXPERIMENT 8B: Single-symptom rescue (sparse augmentation on/off)
+==============================================================================
+  Training without sparse augmentation (sparse_subset_prob=0.0)...
+  Done in 5s
+  Training WITH sparse augmentation (sparse_subset_prob=0.35)...
+  Done in 4s
+
+  Symptom        | Without aug.                     | With aug.                       
+  -------------- | -------------------------------- | --------------------------------
+  cough          | GERD                      20.1%  | Pneumonia                 28.6%
+  itching        | Fungal infection          33.6%  | Fungal infection          15.7%
+  headache       | Migraine                  15.2%  | Malaria                   21.4%
+  [CHECKPOINT v3] Saved exp8b_v1
+
+==============================================================================
+  All v3 experiments complete in 1953.4s (32.6 min)
+  Results: D:\projects\Major Project\verify\results\measured_v3.json
+==============================================================================

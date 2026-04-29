@@ -1,0 +1,50 @@
+
+==============================================================================
+  EXPERIMENT 4 v2: Robustness (9 clients, 8 rounds, label-flip)
+==============================================================================
+  FedAvg         mal=0%  acc=51.08%  n_mal=0/9  wall=121s
+  FedAvg         mal=22%  acc=48.59%  n_mal=2/9  wall=105s
+  FedAvg         mal=44%  acc=37.82%  n_mal=4/9  wall=107s
+  Median         mal=0%  acc=47.87%  n_mal=0/9  wall=103s
+  Median         mal=22%  acc=51.74%  n_mal=2/9  wall=104s
+  Median         mal=44%  acc=43.34%  n_mal=4/9  wall=106s
+  Trimmed Mean   mal=0%  acc=52.57%  n_mal=0/9  wall=102s
+  Trimmed Mean   mal=22%  acc=50.57%  n_mal=2/9  wall=104s
+  Trimmed Mean   mal=44%  acc=42.75%  n_mal=4/9  wall=110s
+  [CHECKPOINT v2] Saved exp4_v2
+
+==============================================================================
+  EXPERIMENT 5 v2: Non-IID Dirichlet alpha sweep (5 clients, 8 rounds)
+==============================================================================
+  alpha=   0.1  acc=66.53%  client0_size=4976  wall=106s
+  alpha=   0.3  acc=74.88%  client0_size=12548  wall=102s
+  alpha=   0.5  acc=76.54%  client0_size=21580  wall=101s
+  alpha=   1.0  acc=79.37%  client0_size=26906  wall=102s
+  alpha=   5.0  acc=78.80%  client0_size=25543  wall=101s
+  alpha= 100.0  acc=63.03%  client0_size=24399  wall=101s
+  [CHECKPOINT v2] Saved exp5_v2
+
+==============================================================================
+  EXPERIMENT 6 v2: MIA with 8 rounds, 3 local epochs, small member set
+==============================================================================
+  No DP           acc=44.28%  AUC=0.529  attack_acc=54.4%  mem_loss=1.060  nonmem_loss=1.100  wall=40s
+  DP sigma=0.1    acc=25.00%  AUC=0.462  attack_acc=51.5%  mem_loss=1.387  nonmem_loss=1.382  wall=40s
+  DP sigma=0.5    acc=25.00%  AUC=0.536  attack_acc=54.2%  mem_loss=1.540  nonmem_loss=1.615  wall=47s
+  DP sigma=1.0    acc=25.00%  AUC=0.548  attack_acc=54.8%  mem_loss=22.693  nonmem_loss=25.324  wall=46s
+  [CHECKPOINT v2] Saved exp6_v2
+
+==============================================================================
+  EXPERIMENT 7 v2: FedProx (5 clients, 8 rounds, alpha=0.3, smaller mu range)
+==============================================================================
+  FedAvg                alpha=0.3  acc=74.88%  wall=100s
+  FedProx mu=1e-05      alpha=0.3  acc=58.99%  wall=184s
+  FedProx mu=0.0001     alpha=0.3  acc=61.18%  wall=186s
+  FedProx mu=0.0005     alpha=0.3  acc=44.07%  wall=186s
+  FedProx mu=0.001      alpha=0.3  acc=27.59%  wall=184s
+  FedProx mu=0.01       alpha=0.3  acc=25.00%  wall=185s
+  [CHECKPOINT v2] Saved exp7_v2
+
+==============================================================================
+  All v2 experiments complete in 2786.7s (46.4 min)
+  Results: D:\projects\Major Project\verify\results\measured_v2.json
+==============================================================================

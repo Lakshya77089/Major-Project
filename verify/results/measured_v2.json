@@ -1,0 +1,345 @@
+{
+  "exp4_v2": {
+    "results": {
+      "FedAvg": {
+        "0%": 51.08,
+        "22%": 48.59,
+        "44%": 37.82
+      },
+      "Median": {
+        "0%": 47.87,
+        "22%": 51.74,
+        "44%": 43.34
+      },
+      "Trimmed Mean": {
+        "0%": 52.57,
+        "22%": 50.57,
+        "44%": 42.75
+      }
+    },
+    "num_clients": 9,
+    "rounds": 8
+  },
+  "exp5_v2": {
+    "rows": [
+      {
+        "alpha": 0.1,
+        "accuracy_pct": 66.53,
+        "client_dists": [
+          [
+            2354,
+            546,
+            880,
+            1196
+          ],
+          [
+            27623,
+            2,
+            25363,
+            0
+          ],
+          [
+            0,
+            12,
+            3754,
+            4563
+          ],
+          [
+            22,
+            0,
+            0,
+            0
+          ],
+          [
+            1,
+            29440,
+            3,
+            24241
+          ]
+        ],
+        "wall_seconds": 106.0
+      },
+      {
+        "alpha": 0.3,
+        "accuracy_pct": 74.88,
+        "client_dists": [
+          [
+            3394,
+            1337,
+            7489,
+            328
+          ],
+          [
+            7544,
+            19822,
+            3945,
+            10003
+          ],
+          [
+            18325,
+            3379,
+            12094,
+            44
+          ],
+          [
+            48,
+            5433,
+            6398,
+            19537
+          ],
+          [
+            689,
+            29,
+            74,
+            88
+          ]
+        ],
+        "wall_seconds": 101.5
+      },
+      {
+        "alpha": 0.5,
+        "accuracy_pct": 76.54,
+        "client_dists": [
+          [
+            4359,
+            7297,
+            6040,
+            3884
+          ],
+          [
+            8478,
+            2524,
+            13338,
+            118
+          ],
+          [
+            16737,
+            3357,
+            8186,
+            6877
+          ],
+          [
+            260,
+            145,
+            552,
+            181
+          ],
+          [
+            166,
+            16677,
+            1884,
+            18940
+          ]
+        ],
+        "wall_seconds": 101.1
+      },
+      {
+        "alpha": 1.0,
+        "accuracy_pct": 79.37,
+        "client_dists": [
+          [
+            4108,
+            20142,
+            845,
+            1811
+          ],
+          [
+            3626,
+            2113,
+            4834,
+            12131
+          ],
+          [
+            9100,
+            2663,
+            15639,
+            3410
+          ],
+          [
+            967,
+            3165,
+            5031,
+            614
+          ],
+          [
+            12199,
+            1917,
+            3651,
+            12034
+          ]
+        ],
+        "wall_seconds": 101.6
+      },
+      {
+        "alpha": 5.0,
+        "accuracy_pct": 78.8,
+        "client_dists": [
+          [
+            5582,
+            6860,
+            8326,
+            4775
+          ],
+          [
+            5733,
+            4286,
+            4474,
+            10880
+          ],
+          [
+            8110,
+            6672,
+            1975,
+            6536
+          ],
+          [
+            4672,
+            4474,
+            7248,
+            4283
+          ],
+          [
+            5903,
+            7708,
+            7977,
+            3526
+          ]
+        ],
+        "wall_seconds": 100.6
+      },
+      {
+        "alpha": 100.0,
+        "accuracy_pct": 63.03,
+        "client_dists": [
+          [
+            5914,
+            6195,
+            6519,
+            5771
+          ],
+          [
+            5951,
+            5620,
+            5727,
+            6975
+          ],
+          [
+            6456,
+            6158,
+            4975,
+            6174
+          ],
+          [
+            5689,
+            5668,
+            6322,
+            5645
+          ],
+          [
+            5990,
+            6359,
+            6457,
+            5435
+          ]
+        ],
+        "wall_seconds": 101.2
+      }
+    ],
+    "rounds": 8
+  },
+  "exp6_v2": {
+    "rows": [
+      {
+        "config": "No DP",
+        "sigma": null,
+        "accuracy_pct": 44.28,
+        "mia_auc": 0.529,
+        "mia_attack_acc": 0.544,
+        "member_loss_mean": 1.06,
+        "nonmember_loss_mean": 1.1,
+        "train_wall_seconds": 39.8
+      },
+      {
+        "config": "DP sigma=0.1",
+        "sigma": 0.1,
+        "accuracy_pct": 25.0,
+        "mia_auc": 0.462,
+        "mia_attack_acc": 0.515,
+        "member_loss_mean": 1.387,
+        "nonmember_loss_mean": 1.382,
+        "train_wall_seconds": 39.7
+      },
+      {
+        "config": "DP sigma=0.5",
+        "sigma": 0.5,
+        "accuracy_pct": 25.0,
+        "mia_auc": 0.536,
+        "mia_attack_acc": 0.542,
+        "member_loss_mean": 1.54,
+        "nonmember_loss_mean": 1.615,
+        "train_wall_seconds": 47.0
+      },
+      {
+        "config": "DP sigma=1.0",
+        "sigma": 1.0,
+        "accuracy_pct": 25.0,
+        "mia_auc": 0.548,
+        "mia_attack_acc": 0.547,
+        "member_loss_mean": 22.693,
+        "nonmember_loss_mean": 25.324,
+        "train_wall_seconds": 46.4
+      }
+    ],
+    "rounds": 8,
+    "local_epochs": 3,
+    "samples_per_client": 3000
+  },
+  "exp7_v2": {
+    "rows": [
+      {
+        "mu": 0.0,
+        "label": "FedAvg",
+        "alpha": 0.3,
+        "accuracy_pct": 74.88,
+        "wall_seconds": 100.1
+      },
+      {
+        "mu": 1e-05,
+        "label": "FedProx mu=1e-05",
+        "alpha": 0.3,
+        "accuracy_pct": 58.99,
+        "wall_seconds": 183.8
+      },
+      {
+        "mu": 0.0001,
+        "label": "FedProx mu=0.0001",
+        "alpha": 0.3,
+        "accuracy_pct": 61.18,
+        "wall_seconds": 186.4
+      },
+      {
+        "mu": 0.0005,
+        "label": "FedProx mu=0.0005",
+        "alpha": 0.3,
+        "accuracy_pct": 44.07,
+        "wall_seconds": 185.5
+      },
+      {
+        "mu": 0.001,
+        "label": "FedProx mu=0.001",
+        "alpha": 0.3,
+        "accuracy_pct": 27.59,
+        "wall_seconds": 184.4
+      },
+      {
+        "mu": 0.01,
+        "label": "FedProx mu=0.01",
+        "alpha": 0.3,
+        "accuracy_pct": 25.0,
+        "wall_seconds": 185.0
+      }
+    ],
+    "alpha": 0.3,
+    "rounds": 8
+  }
+}

@@ -29,6 +29,7 @@ def local_train(
     device: torch.device,
     top_k_sparse: int = 2,
     fedprox_mu: float = 0.0,
+    fedprox_normalise: bool = False,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], int, int, int, List[int], torch.Tensor]:
     """
     Local training loop for one client.
@@ -43,6 +44,12 @@ def local_train(
     that pulls local weights back toward the global model.  This keeps
     heterogeneous clients from drifting too far apart in non-IID settings.
     With ``fedprox_mu = 0`` the function behaves exactly like vanilla FL.
+
+    If ``fedprox_normalise=True``, the proximal term is divided by the total
+    parameter count so it stays scale-balanced against the cross-entropy
+    regardless of model size.  This is required for large models like the
+    600K-parameter MoE used here, where the unnormalised sum-over-params
+    overpowers the cross-entropy loss at any practical mu.
 
     Returns:
         full_state    -- complete model state (dense update)
@@ -88,11 +95,17 @@ def local_train(
             loss = criterion(logits, labels)
 
             # FedProx proximal term: (mu/2) * sum_p ||theta_p - theta_p_global||^2
+            # Optionally normalised by the total parameter count so the
+            # proximal term remains comparable to cross-entropy on large models.
             if fedprox_mu > 0:
                 prox = 0.0
+                n_prox_params = 0
                 for name, p in model.named_parameters():
                     if name in global_snapshot:
                         prox = prox + ((p - global_snapshot[name]) ** 2).sum()
+                        n_prox_params += p.numel()
+                if fedprox_normalise and n_prox_params > 0:
+                    prox = prox / n_prox_params
                 loss = loss + 0.5 * fedprox_mu * prox
 
             loss.backward()
